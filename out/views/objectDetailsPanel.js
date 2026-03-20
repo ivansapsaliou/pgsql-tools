@@ -26,269 +26,241 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ObjectDetailsPanel = void 0;
 const vscode = __importStar(require("vscode"));
 class ObjectDetailsPanel {
-    static async show(context, schema, objectName, objectType, queryExecutor, connectionManager, themeManager) {
-        // Reuse the same panel
+    static async show(context, schema, objectName, objectType, queryExecutor, connectionManager) {
         if (this.currentPanel) {
             this.currentPanel.reveal(vscode.ViewColumn.One);
         }
         else {
-            this.currentPanel = vscode.window.createWebviewPanel('pgsqlObjectDetails', `${objectName}`, vscode.ViewColumn.One, { enableScripts: true });
+            this.currentPanel = vscode.window.createWebviewPanel('pgsqlObjectDetails', objectName, vscode.ViewColumn.One, { enableScripts: true });
             this.currentPanel.onDidDispose(() => {
                 this.currentPanel = undefined;
             });
         }
         try {
-            let html = '';
             if (objectType === 'table') {
                 const ddl = await queryExecutor.getTableDDL(schema, objectName);
                 const data = await queryExecutor.getTableData(schema, objectName);
-                html = this.getTableHtml(themeManager, schema, objectName, ddl, data);
+                this.currentPanel.webview.html = this.getHtml(schema, objectName, ddl, data);
             }
-            this.currentPanel.webview.html = html;
         }
         catch (error) {
             vscode.window.showErrorMessage(`Failed to load object details: ${error}`);
         }
     }
-    static getTableHtml(themeManager, schema, tableName, ddl, data) {
-        const cssVars = themeManager.getCSSVariables();
-        // Generate table rows HTML
+    static getHtml(schema, tableName, ddl, data) {
         const tableRowsHtml = data.rows.map((row) => {
             const cells = data.fields.map((field) => {
                 const value = row[field.name];
-                const displayValue = value === null
-                    ? '<em style="opacity:0.6">NULL</em>'
-                    : this.escapeHtml(String(value));
-                return `<td>${displayValue}</td>`;
+                return value === null
+                    ? '<td><span class="null-val">NULL</span></td>'
+                    : `<td title="${this.escapeHtml(String(value))}">${this.escapeHtml(String(value))}</td>`;
             }).join('');
             return `<tr>${cells}</tr>`;
         }).join('');
-        const tableHeadersHtml = data.fields.map((field) => `<th>${field.name}</th>`).join('');
-        return `
-			<!DOCTYPE html>
-			<html>
-			<head>
-				<meta charset="UTF-8">
-				<meta name="viewport" content="width=device-width, initial-scale=1.0">
-				<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
-				<style>
-					${cssVars}
-					
-					* { margin: 0; padding: 0; box-sizing: border-box; }
-					
-					html, body {
-						width: 100%;
-						height: 100%;
-						font-family: var(--vscode-font-family, 'Segoe UI', sans-serif);
-					}
-					
-					body {
-						background-color: var(--vscode-background);
-						color: var(--vscode-foreground);
-						display: flex;
-						flex-direction: column;
-					}
+        const headerHtml = data.fields.map((f) => `<th>${this.escapeHtml(f.name)}</th>`).join('');
+        return `<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="UTF-8">
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
+	<style>
+		*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-					.header {
-						padding: 12px 15px;
-						background-color: var(--vscode-sidebar-background);
-						border-bottom: 1px solid var(--vscode-input-border);
-						display: flex;
-						align-items: center;
-						justify-content: space-between;
-					}
+		html, body {
+			width: 100%; height: 100%;
+			font-family: var(--vscode-font-family);
+			font-size: var(--vscode-font-size);
+			background: var(--vscode-editor-background);
+			color: var(--vscode-foreground);
+			display: flex;
+			flex-direction: column;
+			overflow: hidden;
+		}
 
-					.header h2 {
-						margin: 0;
-						font-size: 14px;
-						font-weight: 600;
-					}
+		.header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			padding: 8px 12px;
+			background: var(--vscode-editorGroupHeader-tabsBackground);
+			border-bottom: 1px solid var(--vscode-panel-border);
+			flex-shrink: 0;
+		}
 
-					.header-info {
-						font-size: 11px;
-						color: var(--vscode-sidebar-foreground);
-						margin-left: 15px;
-					}
+		.header-title {
+			font-size: 13px;
+			font-weight: 600;
+		}
 
-					.tabs {
-						display: flex;
-						border-bottom: 1px solid var(--vscode-input-border);
-						background-color: var(--vscode-sidebar-background);
-						padding: 0 10px;
-					}
+		.header-meta {
+			font-size: 11px;
+			opacity: 0.6;
+		}
 
-					.tab {
-						padding: 8px 16px;
-						cursor: pointer;
-						border-bottom: 2px solid transparent;
-						color: var(--vscode-sidebar-foreground);
-						font-size: 12px;
-						font-weight: 500;
-						transition: all 0.2s;
-						user-select: none;
-					}
+		.tabs {
+			display: flex;
+			background: var(--vscode-editorGroupHeader-tabsBackground);
+			border-bottom: 1px solid var(--vscode-panel-border);
+			flex-shrink: 0;
+		}
 
-					.tab:hover {
-						background-color: var(--vscode-input-background);
-						color: var(--vscode-foreground);
-					}
+		.tab {
+			padding: 6px 16px;
+			font-size: 12px;
+			font-weight: 500;
+			cursor: pointer;
+			border-bottom: 2px solid transparent;
+			color: var(--vscode-foreground);
+			opacity: 0.7;
+			user-select: none;
+			transition: opacity 0.15s;
+		}
 
-					.tab.active {
-						border-bottom-color: var(--vscode-accent);
-						color: var(--vscode-accent);
-					}
+		.tab:hover { opacity: 1; }
+		.tab.active {
+			opacity: 1;
+			border-bottom-color: var(--vscode-focusBorder);
+			color: var(--vscode-textLink-foreground);
+		}
 
-					.content {
-						flex: 1;
-						overflow: hidden;
-						display: flex;
-						flex-direction: column;
-					}
+		.content {
+			flex: 1;
+			overflow: hidden;
+			display: flex;
+			flex-direction: column;
+		}
 
-					.tab-content {
-						display: none;
-						flex: 1;
-						overflow: auto;
-					}
+		.tab-pane {
+			display: none;
+			flex: 1;
+			overflow: auto;
+		}
 
-					.tab-content.active {
-						display: flex;
-						flex-direction: column;
-					}
+		.tab-pane.active {
+			display: flex;
+			flex-direction: column;
+		}
 
-					#ddl-editor {
-						flex: 1;
-						width: 100%;
-					}
+		#ddlEditor { flex: 1; }
 
-					.data-table {
-						width: 100%;
-						border-collapse: collapse;
-						background-color: var(--vscode-sidebar-background);
-						font-size: 12px;
-					}
+		table {
+			width: 100%;
+			border-collapse: collapse;
+			font-size: 12px;
+		}
 
-					.data-table th,
-					.data-table td {
-						border: 1px solid var(--vscode-input-border);
-						padding: 6px 8px;
-						text-align: left;
-					}
+		thead {
+			position: sticky;
+			top: 0;
+			z-index: 5;
+		}
 
-					.data-table th {
-						background-color: var(--vscode-input-background);
-						font-weight: 600;
-						color: var(--vscode-foreground);
-						position: sticky;
-						top: 0;
-					}
+		th {
+			padding: 4px 8px;
+			text-align: left;
+			background: var(--vscode-editorGroupHeader-tabsBackground);
+			color: var(--vscode-foreground);
+			font-weight: 600;
+			font-size: 11px;
+			border-bottom: 2px solid var(--vscode-panel-border);
+			border-right: 1px solid var(--vscode-panel-border);
+			white-space: nowrap;
+		}
 
-					.data-table td {
-						color: var(--vscode-foreground);
-						word-break: break-word;
-						max-width: 300px;
-					}
+		td {
+			padding: 2px 8px;
+			height: 22px;
+			border-bottom: 1px solid var(--vscode-list-inactiveSelectionBackground, rgba(128,128,128,0.1));
+			border-right: 1px solid var(--vscode-panel-border);
+			max-width: 300px;
+			overflow: hidden;
+			white-space: nowrap;
+			text-overflow: ellipsis;
+		}
 
-					.data-container {
-						overflow: auto;
-						flex: 1;
-					}
+		tr:hover td { background: var(--vscode-list-hoverBackground); }
 
-					.no-data {
-						padding: 20px;
-						text-align: center;
-						color: var(--vscode-sidebar-foreground);
-						font-size: 13px;
-					}
-				</style>
-			</head>
-			<body>
-				<div class="header">
-					<h2>${tableName}</h2>
-					<div class="header-info">
-						Schema: <strong>${schema}</strong>
-					</div>
-				</div>
+		.null-val {
+			color: var(--vscode-debugTokenExpression-null, #808080);
+			font-style: italic;
+		}
 
-				<div class="tabs">
-					<div class="tab active" data-tab="ddl">DDL</div>
-					<div class="tab" data-tab="data">Data (${data.rows.length} rows)</div>
-				</div>
+		.empty {
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			height: 80px;
+			opacity: 0.5;
+			font-size: 12px;
+		}
+	</style>
+</head>
+<body>
+	<div class="header">
+		<span class="header-title">${this.escapeHtml(tableName)}</span>
+		<span class="header-meta">schema: ${this.escapeHtml(schema)}</span>
+	</div>
 
-				<div class="content">
-					<div class="tab-content active" id="ddl-tab">
-						<div id="ddl-editor"></div>
-					</div>
+	<div class="tabs">
+		<div class="tab active" data-tab="ddl">DDL</div>
+		<div class="tab" data-tab="data">Data <span style="opacity:0.6">(${data.rows.length} rows)</span></div>
+	</div>
 
-					<div class="tab-content" id="data-tab">
-						<div class="data-container">
-							${data.rows.length > 0 ? `
-								<table class="data-table">
-									<thead>
-										<tr>
-											${tableHeadersHtml}
-										</tr>
-									</thead>
-									<tbody>
-										${tableRowsHtml}
-									</tbody>
-								</table>
-							` : `<div class="no-data">No data in this table</div>`}
-						</div>
-					</div>
-				</div>
+	<div class="content">
+		<div class="tab-pane active" id="ddl-pane">
+			<div id="ddlEditor"></div>
+		</div>
+		<div class="tab-pane" id="data-pane">
+			${data.rows.length > 0 ? `
+				<table>
+					<thead><tr>${headerHtml}</tr></thead>
+					<tbody>${tableRowsHtml}</tbody>
+				</table>
+			` : '<div class="empty">No data in this table</div>'}
+		</div>
+	</div>
 
-				<script>
-					require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' } });
-					
-					let editor;
-					const ddlContent = \`${ddl.replace(/`/g, '\\`')}\`;
+	<script>
+		require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' } });
 
-					require(['vs/editor/editor.main'], function() {
-						editor = monaco.editor.create(document.getElementById('ddl-editor'), {
-							value: ddlContent,
-							language: 'sql',
-							theme: 'vs-dark',
-							minimap: { enabled: false },
-							fontSize: 13,
-							tabSize: 2,
-							insertSpaces: true,
-							wordWrap: 'on',
-							readOnly: true
-						});
-					});
+		let editor;
+		const ddlContent = ${JSON.stringify(ddl)};
 
-					// Tab switching
-					document.querySelectorAll('.tab').forEach(tab => {
-						tab.addEventListener('click', (e) => {
-							const tabName = e.target.dataset.tab;
-							
-							// Update active tab
-							document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-							e.target.classList.add('active');
+		require(['vs/editor/editor.main'], () => {
+			editor = monaco.editor.create(document.getElementById('ddlEditor'), {
+				value: ddlContent,
+				language: 'sql',
+				theme: document.body.classList.contains('vscode-light') 
+					? 'vs' 
+					: document.body.classList.contains('vscode-high-contrast')
+						? 'hc-black'
+						: 'vs-dark',
+				minimap: { enabled: false },
+				fontSize: 13,
+				readOnly: true,
+				automaticLayout: true,
+				scrollBeyondLastLine: false,
+				wordWrap: 'on'
+			});
+		});
 
-							// Update active content
-							document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-							document.getElementById(tabName + '-tab').classList.add('active');
-
-							// Refresh editor layout if DDL tab is opened
-							if (tabName === 'ddl' && editor) {
-								setTimeout(() => editor.layout(), 100);
-							}
-						});
-					});
-				</script>
-			</body>
-			</html>
-		`;
+		document.querySelectorAll('.tab').forEach(tab => {
+			tab.addEventListener('click', () => {
+				const name = tab.dataset.tab;
+				document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+				document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+				tab.classList.add('active');
+				document.getElementById(name + '-pane').classList.add('active');
+				if (name === 'ddl' && editor) setTimeout(() => editor.layout(), 50);
+			});
+		});
+	</script>
+</body>
+</html>`;
     }
     static escapeHtml(text) {
         const map = {
-            '&': '&amp;',
-            '<': '&lt;',
-            '>': '&gt;',
-            '"': '&quot;',
-            "'": '&#039;'
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
         };
         return text.replace(/[&<>"']/g, m => map[m]);
     }

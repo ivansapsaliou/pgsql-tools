@@ -26,13 +26,13 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.QueryEditorPanel = void 0;
 const vscode = __importStar(require("vscode"));
 class QueryEditorPanel {
-    static show(context, queryExecutor, connectionManager, themeManager) {
+    static show(context, queryExecutor, connectionManager) {
         if (this.panel) {
             this.panel.reveal();
             return;
         }
         this.panel = vscode.window.createWebviewPanel('pgsqlQuery', 'PostgreSQL Query', vscode.ViewColumn.One, { enableScripts: true });
-        this.panel.webview.html = this.getHtml(themeManager);
+        this.panel.webview.html = this.getHtml(connectionManager.getActiveConnectionName());
         this.panel.webview.onDidReceiveMessage(async (message) => {
             if (message.command === 'executeQuery') {
                 try {
@@ -42,7 +42,7 @@ class QueryEditorPanel {
                         result: {
                             rows: result.rows,
                             rowCount: result.rowCount,
-                            fields: result.fields?.map(f => f.name)
+                            fields: result.fields?.map((f) => f.name)
                         }
                     });
                 }
@@ -63,330 +63,310 @@ class QueryEditorPanel {
             });
         }
     }
-    static getHtml(themeManager) {
-        const cssVars = themeManager.getCSSVariables();
-        return `
-			<!DOCTYPE html>
-			<html>
-			<head>
-				<meta charset="UTF-8">
-				<meta name="viewport" content="width=device-width, initial-scale=1.0">
-				<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
-				<style>
-					${cssVars}
-					
-					* { margin: 0; padding: 0; box-sizing: border-box; }
-					
-					html, body {
-						width: 100%;
-						height: 100%;
-						font-family: var(--vscode-font-family, 'Segoe UI', sans-serif);
-					}
-					
-					body { 
-						background-color: var(--vscode-background);
-						color: var(--vscode-foreground);
-						display: flex;
-						flex-direction: column;
-					}
-					
-					#editor-container {
-						flex: 1;
-						border-bottom: 1px solid var(--vscode-input-border);
-						position: relative;
-						display: flex;
-						flex-direction: column;
-					}
+    static getHtml(connectionName) {
+        return `<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
+	<style>
+		*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-					.editor-header {
-						display: flex;
-						align-items: center;
-						padding: 8px 10px;
-						background-color: var(--vscode-sidebar-background);
-						border-bottom: 1px solid var(--vscode-input-border);
-						gap: 8px;
-						flex-wrap: wrap;
-					}
+		html, body {
+			width: 100%; height: 100%;
+			font-family: var(--vscode-font-family);
+			font-size: var(--vscode-font-size);
+			background: var(--vscode-editor-background);
+			color: var(--vscode-foreground);
+			display: flex;
+			flex-direction: column;
+			overflow: hidden;
+		}
 
-					.editor-body {
-						flex: 1;
-					}
+		.toolbar {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			padding: 4px 8px;
+			background: var(--vscode-editorGroupHeader-tabsBackground);
+			border-bottom: 1px solid var(--vscode-panel-border);
+			flex-shrink: 0;
+			height: 35px;
+		}
 
-					.controls { 
-						padding: 8px 10px; 
-						border-bottom: 1px solid var(--vscode-input-border);
-						display: flex; 
-						gap: 8px;
-						background-color: var(--vscode-sidebar-background);
-						align-items: center;
-						flex-wrap: wrap;
-					}
-					
-					button { 
-						padding: 6px 12px; 
-						background-color: var(--vscode-button-background); 
-						color: var(--vscode-button-foreground); 
-						border: 1px solid transparent;
-						border-radius: 2px;
-						cursor: pointer;
-						font-size: 12px;
-						font-weight: 500;
-						transition: background-color 0.2s;
-						display: flex;
-						align-items: center;
-						gap: 4px;
-						white-space: nowrap;
-					}
-					
-					button:hover { 
-						background-color: var(--vscode-button-hoverBackground);
-					}
+		.btn {
+			display: flex;
+			align-items: center;
+			gap: 4px;
+			padding: 2px 10px;
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+			border: none;
+			border-radius: 2px;
+			font-family: var(--vscode-font-family);
+			font-size: 12px;
+			font-weight: 500;
+			cursor: pointer;
+			height: 22px;
+			white-space: nowrap;
+		}
+		.btn:hover { background: var(--vscode-button-hoverBackground); }
+		.btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-					button:disabled {
-						opacity: 0.5;
-						cursor: not-allowed;
-					}
+		.btn-secondary {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+		}
+		.btn-secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
 
-					button:active:not(:disabled) {
-						transform: translateY(1px);
-					}
-					
-					.status-text {
-						color: var(--vscode-sidebar-foreground);
-						font-size: 12px;
-						margin-left: auto;
-					}
-					
-					.results { 
-						flex: 1; 
-						padding: 10px; 
-						overflow: auto;
-						background-color: var(--vscode-background);
-					}
-					
-					.results-container {
-						display: flex;
-						flex-direction: column;
-						height: 100%;
-					}
-					
-					table { 
-						width: 100%; 
-						border-collapse: collapse;
-						background-color: var(--vscode-sidebar-background);
-						font-size: 12px;
-					}
-					
-					th, td { 
-						border: 1px solid var(--vscode-input-border); 
-						padding: 6px 8px; 
-						text-align: left;
-					}
-					
-					th { 
-						background-color: var(--vscode-input-background);
-						font-weight: 600;
-						color: var(--vscode-foreground);
-						position: sticky;
-						top: 0;
-					}
-					
-					td {
-						color: var(--vscode-foreground);
-						word-break: break-word;
-						max-width: 300px;
-					}
-					
-					.error { 
-						color: var(--vscode-error-foreground); 
-						padding: 12px;
-						background-color: rgba(248, 113, 113, 0.1);
-						border-left: 3px solid var(--vscode-error-foreground);
-						border-radius: 2px;
-						font-family: monospace;
-						font-size: 12px;
-						white-space: pre-wrap;
-						word-wrap: break-word;
-					}
-					
-					.info { 
-						color: var(--vscode-sidebar-foreground); 
-						padding: 10px 12px;
-						background-color: var(--vscode-input-background);
-						border-radius: 2px;
-						margin-bottom: 10px;
-						font-size: 12px;
-					}
-					
-					.success-info {
-						background-color: rgba(76, 175, 80, 0.1);
-						border-left: 3px solid #4caf50;
-						color: #4caf50;
-					}
-					
-					.no-results {
-						text-align: center;
-						padding: 30px;
-						color: var(--vscode-sidebar-foreground);
-						font-size: 13px;
-					}
+		.connection-badge {
+			padding: 2px 8px;
+			background: var(--vscode-badge-background);
+			color: var(--vscode-badge-foreground);
+			border-radius: 10px;
+			font-size: 11px;
+			font-weight: 500;
+		}
 
-					.connection-info {
-						padding: 4px 8px;
-						background-color: var(--vscode-input-background);
-						border-radius: 2px;
-						font-size: 11px;
-						color: var(--vscode-sidebar-foreground);
-						border: 1px solid var(--vscode-input-border);
-					}
-				</style>
-			</head>
-			<body>
-				<div id="editor-container">
-					<div class="editor-header">
-						<button id="executeBtn" style="min-width: 80px;">
-							<span>▶</span> Execute
-						</button>
-						<button id="clearBtn">Clear</button>
-						<div class="connection-info" id="connectionInfo">Not connected</div>
-						<div class="status-text" id="statusText"></div>
-					</div>
-					<div class="editor-body"></div>
-				</div>
+		.status {
+			margin-left: auto;
+			font-size: 11px;
+			opacity: 0.6;
+		}
 
-				<div class="results" id="results">
-					<div class="no-results">Results will appear here</div>
-				</div>
+		.editor-wrap {
+			flex: 1;
+			min-height: 0;
+			position: relative;
+		}
 
-				<script>
-					require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' } });
-					
-					let editor;
-					let isExecuting = false;
-					const vscode = acquireVsCodeApi();
+		#monacoEditor {
+			width: 100%;
+			height: 100%;
+		}
 
-					require(['vs/editor/editor.main'], function() {
-						const container = document.querySelector('.editor-body');
-						editor = monaco.editor.create(container, {
-							value: 'SELECT * FROM information_schema.tables LIMIT 10;',
-							language: 'sql',
-							theme: 'vs-dark',
-							minimap: { enabled: false },
-							fontSize: 13,
-							tabSize: 2,
-							insertSpaces: true,
-							wordWrap: 'on',
-							autoClosingBrackets: 'always',
-							autoClosingQuotes: 'always',
-							formatOnPaste: true,
-							suggestOnTriggerCharacters: true,
-							quickSuggestions: {
-								other: true,
-								comments: false,
-								strings: false
-							}
+		.results-wrap {
+			height: 40%;
+			min-height: 80px;
+			border-top: 1px solid var(--vscode-panel-border);
+			overflow: auto;
+			background: var(--vscode-editor-background);
+		}
+
+		.results-placeholder {
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			height: 100%;
+			opacity: 0.4;
+			font-size: 12px;
+		}
+
+		.results-info {
+			padding: 6px 10px;
+			font-size: 11px;
+			background: var(--vscode-editorGroupHeader-tabsBackground);
+			border-bottom: 1px solid var(--vscode-panel-border);
+			color: var(--vscode-foreground);
+			opacity: 0.8;
+		}
+
+		.results-info.error {
+			color: var(--vscode-errorForeground);
+			background: var(--vscode-inputValidation-errorBackground);
+		}
+
+		table {
+			width: 100%;
+			border-collapse: collapse;
+			font-size: 12px;
+		}
+
+		thead {
+			position: sticky;
+			top: 0;
+			z-index: 5;
+		}
+
+		th {
+			padding: 4px 8px;
+			text-align: left;
+			background: var(--vscode-editorGroupHeader-tabsBackground);
+			color: var(--vscode-foreground);
+			font-weight: 600;
+			font-size: 11px;
+			border-bottom: 2px solid var(--vscode-panel-border);
+			border-right: 1px solid var(--vscode-panel-border);
+			white-space: nowrap;
+		}
+
+		td {
+			padding: 2px 8px;
+			height: 22px;
+			border-bottom: 1px solid var(--vscode-list-inactiveSelectionBackground, rgba(128,128,128,0.1));
+			border-right: 1px solid var(--vscode-panel-border);
+			max-width: 300px;
+			overflow: hidden;
+			white-space: nowrap;
+			text-overflow: ellipsis;
+			font-size: 12px;
+		}
+
+		tr:hover td { background: var(--vscode-list-hoverBackground); }
+
+		.null-val {
+			color: var(--vscode-debugTokenExpression-null, #808080);
+			font-style: italic;
+		}
+
+		.resizer {
+			height: 4px;
+			background: transparent;
+			cursor: ns-resize;
+			flex-shrink: 0;
+			border-top: 1px solid var(--vscode-panel-border);
+		}
+		.resizer:hover { background: var(--vscode-focusBorder); }
+	</style>
+</head>
+<body>
+	<div class="toolbar">
+		<button class="btn" id="executeBtn">▶ Execute</button>
+		<button class="btn btn-secondary" id="clearBtn">Clear</button>
+		${connectionName ? `<span class="connection-badge">⬤ ${connectionName}</span>` : '<span class="connection-badge" style="opacity:0.5">Not connected</span>'}
+		<span class="status" id="status"></span>
+	</div>
+
+	<div class="editor-wrap">
+		<div id="monacoEditor"></div>
+	</div>
+
+	<div class="resizer" id="resizer"></div>
+
+	<div class="results-wrap" id="resultsWrap">
+		<div class="results-placeholder">Execute a query to see results</div>
+	</div>
+
+	<script>
+		require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' } });
+
+		const vscode = acquireVsCodeApi();
+		let editor, isExecuting = false;
+
+		require(['vs/editor/editor.main'], () => {
+			editor = monaco.editor.create(document.getElementById('monacoEditor'), {
+				value: '',
+				language: 'sql',
+				theme: document.body.classList.contains('vscode-light') ? 'vs' : 'vs-dark',
+				minimap: { enabled: false },
+				fontSize: 13,
+				tabSize: 2,
+				wordWrap: 'on',
+				scrollBeyondLastLine: false,
+				automaticLayout: true,
+				quickSuggestions: { other: true, comments: false, strings: false },
+				suggestOnTriggerCharacters: true
+			});
+
+			editor.onDidChangeModelContent(() => {
+				vscode.postMessage({ command: 'queryChanged', query: editor.getValue() });
+			});
+
+			editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, executeQuery);
+		});
+
+		function executeQuery() {
+			if (!editor || isExecuting) return;
+			const query = editor.getValue().trim();
+			if (!query) return;
+
+			isExecuting = true;
+			document.getElementById('executeBtn').disabled = true;
+			document.getElementById('executeBtn').textContent = '⟳ Running…';
+			document.getElementById('status').textContent = '';
+
+			vscode.postMessage({ command: 'executeQuery', query });
+		}
+
+		document.getElementById('executeBtn').addEventListener('click', executeQuery);
+		document.getElementById('clearBtn').addEventListener('click', () => {
+			editor?.setValue('');
+			document.getElementById('resultsWrap').innerHTML = '<div class="results-placeholder">Execute a query to see results</div>';
+			document.getElementById('status').textContent = '';
+		});
+
+		// Resize handle
+		const resizer = document.getElementById('resizer');
+		const resultsWrap = document.getElementById('resultsWrap');
+		let isResizing = false, startY = 0, startH = 0;
+
+		resizer.addEventListener('mousedown', e => {
+			isResizing = true;
+			startY = e.clientY;
+			startH = resultsWrap.offsetHeight;
+			document.body.style.cursor = 'ns-resize';
+		});
+
+		document.addEventListener('mousemove', e => {
+			if (!isResizing) return;
+			const delta = startY - e.clientY;
+			resultsWrap.style.height = Math.max(60, startH + delta) + 'px';
+		});
+
+		document.addEventListener('mouseup', () => {
+			isResizing = false;
+			document.body.style.cursor = '';
+		});
+
+		function escapeHtml(t) {
+			const d = document.createElement('div');
+			d.textContent = t;
+			return d.innerHTML;
+		}
+
+		window.addEventListener('message', e => {
+			const msg = e.data;
+			isExecuting = false;
+			document.getElementById('executeBtn').disabled = false;
+			document.getElementById('executeBtn').textContent = '▶ Execute';
+
+			if (msg.command === 'queryResult') {
+				const { rows, rowCount, fields } = msg.result;
+				document.getElementById('status').textContent = rowCount + ' rows';
+
+				let html = '<div class="results-info">✓ ' + rowCount + ' rows returned</div>';
+
+				if (rows.length > 0) {
+					html += '<table><thead><tr>';
+					fields.forEach(f => { html += '<th>' + escapeHtml(f) + '</th>'; });
+					html += '</tr></thead><tbody>';
+					rows.forEach(row => {
+						html += '<tr>';
+						fields.forEach(f => {
+							const v = row[f];
+							html += v === null
+								? '<td><span class="null-val">NULL</span></td>'
+								: '<td title="' + escapeHtml(String(v)) + '">' + escapeHtml(String(v)) + '</td>';
 						});
-
-						// Listen for changes
-						editor.onDidChangeModelContent(() => {
-							const value = editor.getValue();
-							vscode.postMessage({
-								command: 'queryChanged',
-								query: value
-							});
-						});
-
-						// Ctrl+Enter to execute
-						editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
-							executeQuery();
-						});
+						html += '</tr>';
 					});
+					html += '</tbody></table>';
+				} else {
+					html += '<div class="results-placeholder">Query executed — no rows returned</div>';
+				}
 
-					const executeBtn = document.getElementById('executeBtn');
-					const clearBtn = document.getElementById('clearBtn');
-					const resultsDiv = document.getElementById('results');
-					const statusText = document.getElementById('statusText');
+				document.getElementById('resultsWrap').innerHTML = html;
 
-					function executeQuery() {
-						if (!editor || isExecuting) return;
-						
-						const query = editor.getValue().trim();
-						if (!query) {
-							statusText.textContent = 'Query is empty';
-							return;
-						}
-
-						isExecuting = true;
-						executeBtn.disabled = true;
-						executeBtn.textContent = '⟳ Executing...';
-						statusText.textContent = 'Executing query...';
-
-						vscode.postMessage({
-							command: 'executeQuery',
-							query: query
-						});
-					}
-
-					executeBtn.addEventListener('click', executeQuery);
-
-					clearBtn.addEventListener('click', () => {
-						if (editor) {
-							editor.setValue('');
-							editor.focus();
-						}
-						resultsDiv.innerHTML = '<div class="no-results">Results will appear here</div>';
-						statusText.textContent = '';
-					});
-
-					window.addEventListener('message', (event) => {
-						const message = event.data;
-						isExecuting = false;
-						executeBtn.disabled = false;
-						executeBtn.textContent = '▶ Execute';
-						
-						if (message.command === 'queryResult') {
-							const result = message.result;
-							statusText.textContent = 'Rows: ' + result.rowCount;
-							
-							let html = '<div class="info success-info">✓ Query executed successfully. Rows returned: ' + result.rowCount + '</div>';
-							
-							if (result.rows.length > 0) {
-								html += '<div class="results-container"><table>';
-								html += '<thead><tr>';
-								result.fields.forEach(field => {
-									html += '<th>' + escapeHtml(field) + '</th>';
-								});
-								html += '</tr></thead>';
-								html += '<tbody>';
-								result.rows.forEach(row => {
-									html += '<tr>';
-									result.fields.forEach(field => {
-										const value = row[field];
-										let displayValue = value === null ? '<em style="opacity:0.6">NULL</em>' : escapeHtml(String(value));
-										html += '<td>' + displayValue + '</td>';
-									});
-									html += '</tr>';
-								});
-								html += '</tbody></table></div>';
-							} else {
-								html += '<div class="no-results">Query executed, but no rows were returned</div>';
-							}
-							resultsDiv.innerHTML = html;
-						} else if (message.command === 'queryError') {
-							statusText.textContent = 'Error: ' + message.error;
-							resultsDiv.innerHTML = '<div class="error">Error executing query:\\n\\n' + escapeHtml(message.error) + '</div>';
-						}
-					});
-
-					function escapeHtml(text) {
-						const div = document.createElement('div');
-						div.textContent = text;
-						return div.innerHTML;
-					}
-				</script>
-			</body>
-			</html>
-		`;
+			} else if (msg.command === 'queryError') {
+				document.getElementById('status').textContent = 'Error';
+				document.getElementById('resultsWrap').innerHTML =
+					'<div class="results-info error">✕ ' + escapeHtml(msg.error) + '</div>';
+			}
+		});
+	</script>
+</body>
+</html>`;
     }
 }
 exports.QueryEditorPanel = QueryEditorPanel;

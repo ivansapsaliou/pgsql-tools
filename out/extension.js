@@ -33,7 +33,6 @@ const connectionWebview_1 = require("./views/connectionWebview");
 const queryEditorPanel_1 = require("./views/queryEditorPanel");
 const objectDetailsPanel_1 = require("./views/objectDetailsPanel");
 const resultsPanel_1 = require("./views/resultsPanel");
-const themeManager_1 = require("./theme/themeManager");
 const sqlCompletionProvider_1 = require("./language/sqlCompletionProvider");
 const sqlHoverProvider_1 = require("./language/sqlHoverProvider");
 const executeSqlFile_1 = require("./commands/executeSqlFile");
@@ -41,27 +40,23 @@ let connectionManager;
 let databaseTreeProvider;
 let connectionsTreeProvider;
 let queryExecutor;
-let themeManager;
 let sqlCompletionProvider;
 let resultsViewProvider;
 function activate(context) {
     console.log('pgsql-tools extension is now active!');
-    // Initialize managers
     connectionManager = new connectionManager_1.ConnectionManager(context);
     databaseTreeProvider = new treeDataProvider_1.PostgreSQLTreeDataProvider(connectionManager);
     connectionsTreeProvider = new connectionsTreeProvider_1.ConnectionsTreeProvider(connectionManager);
     queryExecutor = new queryExecutor_1.QueryExecutor(connectionManager);
-    themeManager = new themeManager_1.ThemeManager();
     sqlCompletionProvider = new sqlCompletionProvider_1.SQLCompletionProvider(queryExecutor, connectionManager);
     resultsViewProvider = new resultsPanel_1.ResultsViewProvider(context.extensionUri);
-    // Set context flag
     vscode.commands.executeCommand('setContext', 'pgsqlToolsActive', true);
-    // Register WebviewViewProvider for Results Panel
+    // Register WebviewViewProvider for Results Panel (bottom panel)
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(resultsPanel_1.ResultsViewProvider.viewType, resultsViewProvider, { webviewOptions: { retainContextWhenHidden: true } }));
-    // Register language providers
-    context.subscriptions.push(vscode.languages.registerCompletionItemProvider('sql', sqlCompletionProvider, '.', ' '));
+    // Language providers
+    context.subscriptions.push(vscode.languages.registerCompletionItemProvider('sql', sqlCompletionProvider, '.', ' ', '\t'));
     context.subscriptions.push(vscode.languages.registerHoverProvider('sql', new sqlHoverProvider_1.SQLHoverProvider()));
-    // Register Tree Views
+    // Tree Views
     const databaseTreeView = vscode.window.createTreeView('pgsqlDatabases', {
         treeDataProvider: databaseTreeProvider,
         showCollapseAll: true
@@ -70,26 +65,25 @@ function activate(context) {
         treeDataProvider: connectionsTreeProvider,
         showCollapseAll: false
     });
-    // Register Commands
+    // Commands
     const commands = [
         vscode.commands.registerCommand('pgsql-tools.addConnection', () => {
-            connectionWebview_1.ConnectionWebview.show(context, connectionManager, databaseTreeProvider, connectionsTreeProvider, themeManager);
+            connectionWebview_1.ConnectionWebview.show(context, connectionManager, databaseTreeProvider, connectionsTreeProvider);
         }),
-        vscode.commands.registerCommand('pgsql-tools.executeQuery', () => {
-            queryEditorPanel_1.QueryEditorPanel.show(context, queryExecutor, connectionManager, themeManager);
+        vscode.commands.registerCommand('pgsql-tools.openQueryEditor', () => {
+            queryEditorPanel_1.QueryEditorPanel.show(context, queryExecutor, connectionManager);
         }),
         vscode.commands.registerCommand('pgsql-tools.openQueryFile', async () => {
-            // Create a new untitled SQL file
             const document = await vscode.workspace.openTextDocument({
                 language: 'sql',
-                content: '-- PostgreSQL Query\n-- Connection: ' + (connectionManager.getActiveConnectionName() || 'Not selected') + '\n\nSELECT * FROM information_schema.tables LIMIT 10;\n'
+                content: `-- PostgreSQL Query\n-- Connection: ${connectionManager.getActiveConnectionName() || 'Not selected'}\n\n`
             });
             await vscode.window.showTextDocument(document, vscode.ViewColumn.One);
         }),
         vscode.commands.registerCommand('pgsql-tools.viewTableDetails', async (node) => {
             const schema = node.parentSchema || 'public';
             const tableName = node.label;
-            await objectDetailsPanel_1.ObjectDetailsPanel.show(context, schema, tableName, 'table', queryExecutor, connectionManager, themeManager);
+            await objectDetailsPanel_1.ObjectDetailsPanel.show(context, schema, tableName, 'table', queryExecutor, connectionManager);
         }),
         vscode.commands.registerCommand('pgsql-tools.refreshDatabases', () => {
             databaseTreeProvider.refresh();
@@ -118,23 +112,15 @@ function activate(context) {
         }),
         executeSqlFile_1.ExecuteSqlFileCommand.register(queryExecutor, connectionManager, resultsViewProvider)
     ];
-    // Listen for theme changes
-    const themeChangeListener = vscode.window.onDidChangeActiveColorTheme((theme) => {
-        console.log('Theme changed to:', theme.kind);
-        themeManager.updateTheme(theme);
-    });
-    // Auto-refresh tree when views become visible
     const databaseViewVisibilityListener = databaseTreeView.onDidChangeVisibility((e) => {
-        if (e.visible) {
+        if (e.visible)
             databaseTreeProvider.refresh();
-        }
     });
     const connectionsViewVisibilityListener = connectionsTreeView.onDidChangeVisibility((e) => {
-        if (e.visible) {
+        if (e.visible)
             connectionsTreeProvider.refresh();
-        }
     });
-    context.subscriptions.push(...commands, themeChangeListener, databaseViewVisibilityListener, connectionsViewVisibilityListener);
+    context.subscriptions.push(...commands, databaseViewVisibilityListener, connectionsViewVisibilityListener);
 }
 exports.activate = activate;
 function deactivate() {

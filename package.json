@@ -51,8 +51,8 @@
 				"icon": "$(add)"
 			},
 			{
-				"command": "pgsql-tools.executeQuery",
-				"title": "PostgreSQL: Execute Query",
+				"command": "pgsql-tools.openQueryEditor",
+				"title": "PostgreSQL: Open Query Editor",
 				"icon": "$(run)"
 			},
 			{
