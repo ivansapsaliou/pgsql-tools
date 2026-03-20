@@ -10,17 +10,27 @@ export interface ConnectionConfig {
 	password: string;
 }
 
+// Stored without password — passwords live in SecretStorage
+interface SavedConnection {
+	name: string;
+	host: string;
+	port: number;
+	database: string;
+	user: string;
+}
+
+const CONNECTIONS_KEY = 'pgsqlConnections';
+
 export class ConnectionManager {
 	private connections: Map<string, pg.Client> = new Map();
 	private activeConnection: string | null = null;
-	private config: vscode.WorkspaceConfiguration;
 	private context: vscode.ExtensionContext;
 
 	constructor(context: vscode.ExtensionContext) {
 		this.context = context;
-		this.config = vscode.workspace.getConfiguration('pgsqlTools');
-		this.loadConnections();
 	}
+
+	// ── Public API ────────────────────────────────────────────────────────────
 
 	async addConnection(config: ConnectionConfig): Promise<boolean> {
 		try {
@@ -33,9 +43,20 @@ export class ConnectionManager {
 			});
 
 			await client.connect();
+
+			// Handle unexpected disconnects
+			client.on('error', (err) => {
+				console.error(`Connection "${config.name}" error:`, err.message);
+				this.connections.delete(config.name);
+				if (this.activeConnection === config.name) {
+					this.activeConnection = this.connections.keys().next().value ?? null;
+				}
+			});
+
 			this.connections.set(config.name, client);
 			this.activeConnection = config.name;
-			this.saveConnection(config);
+
+			await this.saveConnection(config);
 			return true;
 		} catch (error) {
 			vscode.window.showErrorMessage(`Connection failed: ${error}`);
@@ -46,18 +67,64 @@ export class ConnectionManager {
 	async removeConnection(name: string): Promise<void> {
 		const client = this.connections.get(name);
 		if (client) {
-			await client.end();
+			try { await client.end(); } catch { /* ignore */ }
 			this.connections.delete(name);
 		}
+
 		if (this.activeConnection === name) {
-			this.activeConnection = this.connections.keys().next().value || null;
+			this.activeConnection = this.connections.keys().next().value ?? null;
 		}
-		this.deleteConnectionConfig(name);
+
+		await this.deleteConnection(name);
+	}
+
+	/**
+	 * Restore persisted connections on startup.
+	 * Attempts to reconnect each saved connection using the stored password.
+	 * Silently skips connections that fail (e.g. server not reachable).
+	 */
+	async restoreConnections(): Promise<void> {
+		const saved = this.getSavedList();
+		for (const conn of saved) {
+			const password = await this.loadPassword(conn.name);
+			if (password === undefined) continue; // no password stored — skip
+
+			try {
+				const client = new pg.Client({
+					host: conn.host,
+					port: conn.port,
+					database: conn.database,
+					user: conn.user,
+					password
+				});
+
+				await client.connect();
+
+				client.on('error', (err) => {
+					console.error(`Connection "${conn.name}" error:`, err.message);
+					this.connections.delete(conn.name);
+					if (this.activeConnection === conn.name) {
+						this.activeConnection = this.connections.keys().next().value ?? null;
+					}
+				});
+
+				this.connections.set(conn.name, client);
+
+				// Make the first restored connection active
+				if (!this.activeConnection) {
+					this.activeConnection = conn.name;
+				}
+			} catch (err) {
+				// Server unreachable or password changed — leave it in the saved list
+				// but don't add to active connections
+				console.warn(`Could not restore connection "${conn.name}":`, err);
+			}
+		}
 	}
 
 	getActiveConnection(): pg.Client | null {
 		if (this.activeConnection) {
-			return this.connections.get(this.activeConnection) || null;
+			return this.connections.get(this.activeConnection) ?? null;
 		}
 		return null;
 	}
@@ -72,36 +139,65 @@ export class ConnectionManager {
 		return Array.from(this.connections.keys());
 	}
 
+	/** Returns all saved connection names (including ones not yet connected). */
+	getSavedConnectionNames(): string[] {
+		return this.getSavedList().map(c => c.name);
+	}
+
 	getActiveConnectionName(): string | null {
 		return this.activeConnection;
 	}
 
 	async closeAllConnections(): Promise<void> {
 		for (const client of this.connections.values()) {
-			await client.end();
+			try { await client.end(); } catch { /* ignore */ }
 		}
 		this.connections.clear();
+		this.activeConnection = null;
 	}
 
-	private saveConnection(config: ConnectionConfig): void {
-		const connections = this.context.globalState.get<ConnectionConfig[]>('pgsqlConnections') || [];
-		const index = connections.findIndex(c => c.name === config.name);
-		if (index >= 0) {
-			connections[index] = config;
+	// ── Persistence ───────────────────────────────────────────────────────────
+
+	private async saveConnection(config: ConnectionConfig): Promise<void> {
+		// Save metadata (no password) in globalState
+		const list = this.getSavedList();
+		const idx = list.findIndex(c => c.name === config.name);
+		const meta: SavedConnection = {
+			name: config.name,
+			host: config.host,
+			port: config.port,
+			database: config.database,
+			user: config.user
+		};
+
+		if (idx >= 0) {
+			list[idx] = meta;
 		} else {
-			connections.push(config);
+			list.push(meta);
 		}
-		this.context.globalState.update('pgsqlConnections', connections);
+
+		await this.context.globalState.update(CONNECTIONS_KEY, list);
+
+		// Save password in SecretStorage
+		await this.context.secrets.store(
+			`pgsql.password.${config.name}`,
+			config.password
+		);
 	}
 
-	private deleteConnectionConfig(name: string): void {
-		const connections = this.context.globalState.get<ConnectionConfig[]>('pgsqlConnections') || [];
-		const filtered = connections.filter(c => c.name !== name);
-		this.context.globalState.update('pgsqlConnections', filtered);
+	private async deleteConnection(name: string): Promise<void> {
+		const list = this.getSavedList().filter(c => c.name !== name);
+		await this.context.globalState.update(CONNECTIONS_KEY, list);
+		try {
+			await this.context.secrets.delete(`pgsql.password.${name}`);
+		} catch { /* ignore */ }
 	}
 
-	private loadConnections(): void {
-		const saved = this.context.globalState.get<ConnectionConfig[]>('pgsqlConnections') || [];
-		// Connections are loaded but not automatically connected for security reasons
+	private getSavedList(): SavedConnection[] {
+		return this.context.globalState.get<SavedConnection[]>(CONNECTIONS_KEY) ?? [];
+	}
+
+	private async loadPassword(name: string): Promise<string | undefined> {
+		return this.context.secrets.get(`pgsql.password.${name}`);
 	}
 }

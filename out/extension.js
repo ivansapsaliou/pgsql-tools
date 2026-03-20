@@ -42,7 +42,7 @@ let connectionsTreeProvider;
 let queryExecutor;
 let sqlCompletionProvider;
 let resultsViewProvider;
-function activate(context) {
+async function activate(context) {
     console.log('pgsql-tools extension is now active!');
     connectionManager = new connectionManager_1.ConnectionManager(context);
     databaseTreeProvider = new treeDataProvider_1.PostgreSQLTreeDataProvider(connectionManager);
@@ -51,6 +51,10 @@ function activate(context) {
     sqlCompletionProvider = new sqlCompletionProvider_1.SQLCompletionProvider(queryExecutor, connectionManager);
     resultsViewProvider = new resultsPanel_1.ResultsViewProvider(context.extensionUri);
     vscode.commands.executeCommand('setContext', 'pgsqlToolsActive', true);
+    // Restore saved connections from previous session (passwords from SecretStorage)
+    await connectionManager.restoreConnections();
+    connectionsTreeProvider.refresh();
+    databaseTreeProvider.refresh();
     // Register WebviewViewProvider for Results Panel (bottom panel)
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(resultsPanel_1.ResultsViewProvider.viewType, resultsViewProvider, { webviewOptions: { retainContextWhenHidden: true } }));
     // Language providers
@@ -83,7 +87,7 @@ function activate(context) {
         vscode.commands.registerCommand('pgsql-tools.viewTableDetails', async (node) => {
             const schema = node.parentSchema || 'public';
             const tableName = node.label;
-            await objectDetailsPanel_1.ObjectDetailsPanel.show(context, schema, tableName, 'table', queryExecutor, connectionManager);
+            await objectDetailsPanel_1.ObjectDetailsPanel.show(context, schema, tableName, 'table', queryExecutor, connectionManager, resultsViewProvider);
         }),
         vscode.commands.registerCommand('pgsql-tools.refreshDatabases', () => {
             databaseTreeProvider.refresh();

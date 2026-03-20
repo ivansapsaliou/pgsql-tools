@@ -18,7 +18,7 @@ let queryExecutor: QueryExecutor;
 let sqlCompletionProvider: SQLCompletionProvider;
 let resultsViewProvider: ResultsViewProvider;
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
 	console.log('pgsql-tools extension is now active!');
 
 	connectionManager = new ConnectionManager(context);
@@ -29,6 +29,11 @@ export function activate(context: vscode.ExtensionContext) {
 	resultsViewProvider = new ResultsViewProvider(context.extensionUri);
 
 	vscode.commands.executeCommand('setContext', 'pgsqlToolsActive', true);
+
+	// Restore saved connections from previous session (passwords from SecretStorage)
+	await connectionManager.restoreConnections();
+	connectionsTreeProvider.refresh();
+	databaseTreeProvider.refresh();
 
 	// Register WebviewViewProvider for Results Panel (bottom panel)
 	context.subscriptions.push(
@@ -95,7 +100,8 @@ export function activate(context: vscode.ExtensionContext) {
 				tableName,
 				'table',
 				queryExecutor,
-				connectionManager
+				connectionManager,
+				resultsViewProvider
 			);
 		}),
 
