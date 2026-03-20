@@ -1,0 +1,153 @@
+{
+	"name": "pgsql-tools",
+	"displayName": "PostgreSQL Tools",
+	"description": "PostgreSQL database management tool for VS Code",
+	"version": "0.1.0",
+	"publisher": "ivansapsaliou",
+	"icon": "resources/icon.png",
+	"engines": {
+		"vscode": "^1.75.0"
+	},
+	"categories": [
+		"Data Science"
+	],
+	"activationEvents": [],
+	"main": "./out/extension.js",
+	"contributes": {
+		"viewsContainers": {
+			"activitybar": [
+				{
+					"id": "pgsql-tools",
+					"title": "PostgreSQL Tools",
+					"icon": "resources/database-icon.svg"
+				}
+			]
+		},
+		"views": {
+			"pgsql-tools": [
+				{
+					"id": "pgsqlConnections",
+					"name": "Connections",
+					"when": "true"
+				},
+				{
+					"id": "pgsqlDatabases",
+					"name": "Database Objects",
+					"when": "pgsqlToolsActive"
+				}
+			],
+			"panel": [
+				{
+					"type": "webview",
+					"id": "pgsqlResults",
+					"name": "Query Results"
+				}
+			]
+		},
+		"commands": [
+			{
+				"command": "pgsql-tools.addConnection",
+				"title": "PostgreSQL: Add Connection",
+				"icon": "$(add)"
+			},
+			{
+				"command": "pgsql-tools.executeQuery",
+				"title": "PostgreSQL: Execute Query",
+				"icon": "$(run)"
+			},
+			{
+				"command": "pgsql-tools.executeSqlFile",
+				"title": "PostgreSQL: Execute SQL File",
+				"icon": "$(play)"
+			},
+			{
+				"command": "pgsql-tools.openQueryFile",
+				"title": "PostgreSQL: Open Query File",
+				"icon": "$(file)"
+			},
+			{
+				"command": "pgsql-tools.viewTableDetails",
+				"title": "PostgreSQL: View Table Details"
+			},
+			{
+				"command": "pgsql-tools.refreshDatabases",
+				"title": "PostgreSQL: Refresh",
+				"icon": "$(refresh)"
+			},
+			{
+				"command": "pgsql-tools.deleteConnection",
+				"title": "PostgreSQL: Delete Connection",
+				"icon": "$(trash)"
+			},
+			{
+				"command": "pgsql-tools.selectConnection",
+				"title": "PostgreSQL: Select Connection"
+			}
+		],
+		"menus": {
+			"editor/title": [
+				{
+					"command": "pgsql-tools.executeSqlFile",
+					"when": "resourceLangId == sql",
+					"group": "navigation"
+				}
+			],
+			"view/title": [
+				{
+					"command": "pgsql-tools.addConnection",
+					"when": "view == pgsqlConnections",
+					"group": "navigation"
+				},
+				{
+					"command": "pgsql-tools.refreshDatabases",
+					"when": "view == pgsqlDatabases",
+					"group": "navigation"
+				},
+				{
+					"command": "pgsql-tools.openQueryFile",
+					"when": "view == pgsqlDatabases",
+					"group": "navigation"
+				}
+			],
+			"view/item/context": [
+				{
+					"command": "pgsql-tools.selectConnection",
+					"when": "view == pgsqlConnections && viewItem == connection",
+					"group": "inline"
+				},
+				{
+					"command": "pgsql-tools.deleteConnection",
+					"when": "view == pgsqlConnections && viewItem == connection",
+					"group": "inline"
+				}
+			]
+		},
+		"keybindings": [
+			{
+				"command": "pgsql-tools.executeSqlFile",
+				"key": "ctrl+shift+e",
+				"mac": "cmd+shift+e",
+				"when": "editorTextFocus && editorLangId == sql"
+			}
+		]
+	},
+	"scripts": {
+		"vscode:prepublish": "npm run compile",
+		"compile": "tsc -p ./",
+		"watch": "tsc -watch -p ./",
+		"pretest": "npm run compile && npm run lint",
+		"lint": "eslint src --ext ts"
+	},
+	"devDependencies": {
+		"@types/node": "^18.0.0",
+		"@types/pg": "^8.10.0",
+		"@types/vscode": "^1.75.0",
+		"@typescript-eslint/eslint-plugin": "^5.48.0",
+		"@typescript-eslint/parser": "^5.48.0",
+		"eslint": "^8.31.0",
+		"typescript": "^4.9.4"
+	},
+	"dependencies": {
+		"pg": "^8.11.0"
+	}
+}

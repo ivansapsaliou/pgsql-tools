@@ -1,0 +1,1 @@
+{"version":3,"file":"sqlHoverProvider.d.ts","sourceRoot":"","sources":["../../src/language/sqlHoverProvider.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,MAAM,MAAM,QAAQ,CAAC;AAEjC,qBAAa,gBAAiB,YAAW,MAAM,CAAC,aAAa;IAC5D,YAAY,CACX,QAAQ,EAAE,MAAM,CAAC,YAAY,EAC7B,QAAQ,EAAE,MAAM,CAAC,QAAQ,EACzB,KAAK,EAAE,MAAM,CAAC,iBAAiB,GAC7B,MAAM,CAAC,cAAc,CAAC,MAAM,CAAC,KAAK,CAAC;CA2BtC"}

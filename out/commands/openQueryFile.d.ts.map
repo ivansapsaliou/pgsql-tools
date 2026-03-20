@@ -1,0 +1,1 @@
+{"version":3,"file":"openQueryFile.d.ts","sourceRoot":"","sources":["../../src/commands/openQueryFile.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,MAAM,MAAM,QAAQ,CAAC;AACjC,OAAO,EAAE,aAAa,EAAE,MAAM,2BAA2B,CAAC;AAC1D,OAAO,EAAE,iBAAiB,EAAE,MAAM,+BAA+B,CAAC;AAElE,qBAAa,oBAAoB;IAChC,MAAM,CAAC,QAAQ,CAAC,aAAa,EAAE,aAAa,EAAE,iBAAiB,EAAE,iBAAiB;CAWlF"}
