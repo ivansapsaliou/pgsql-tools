@@ -1,53 +1,10 @@
-# Dependencies
+# Ignore build artifacts and runtime-only files for the compiled VS Code extension
 node_modules/
-
-# TypeScript build output (VS Code extensions обычно компилируются в out/)
 out/
-dist/
-build/
-
-# VS Code extension packaging artifacts
 *.vsix
-*.tgz
-
-# Source maps / caches
 *.map
-*.tsbuildinfo
-
-# Logs
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-# Test / coverage
 coverage/
-.nyc_output/
-.vscode-test/
-.vscode-test-web/
-
-# Environment / secrets
-.env
-.env.*
-!.env.example
-
-# OS / editor junk
+dist/
 .DS_Store
-Thumbs.db
-
-# VS Code local workspace settings (опционально: если не хотите коммитить)
-.vscode/
-!.vscode/extensions.json
-!.vscode/launch.json
-!.vscode/tasks.json
-!.vscode/settings.json
-
-# JetBrains
-.idea/
-
-# Temporary files
-*.tmp
-*.temp
-*.swp
-*.swo
+.vscode-test/
+.env
