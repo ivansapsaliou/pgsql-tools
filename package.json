@@ -94,6 +94,11 @@
 				"icon": "$(type-hierarchy)"
 			},
 			{
+				"command": "pgsql-tools.showHealth",
+				"title": "PostgreSQL: Database Health",
+				"icon": "$(pulse)"
+			},
+			{
 				"command": "pgsql-tools.healthSlowQueries",
 				"title": "PostgreSQL: Health — Slow Queries",
 				"icon": "$(watch)"
@@ -157,6 +162,11 @@
 					"command": "pgsql-tools.showERD",
 					"when": "view == pgsqlDatabases || view == pgsqlConnections",
 					"group": "navigation"
+				},
+				{
+					"command": "pgsql-tools.showHealth",
+					"when": "view == pgsqlConnections",
+					"group": "navigation"
 				}
 			],
 			"view/item/context": [
@@ -171,17 +181,26 @@
 					"group": "inline"
 				},
 				{
+					"command": "pgsql-tools.showHealth",
+					"when": "view == pgsqlConnections && viewItem == connection",
+					"group": "context@1"
+				},
+				{
 					"command": "pgsql-tools.showERD",
 					"when": "view == pgsqlConnections && viewItem == connection",
-					"group": "context"
+					"group": "context@2"
 				},
 				{
 					"command": "pgsql-tools.schemaDiff",
 					"when": "view == pgsqlConnections && viewItem == connection",
-					"group": "context"
+					"group": "context@3"
 				}
 			],
 			"commandPalette": [
+				{
+					"command": "pgsql-tools.showHealth",
+					"when": "pgsqlToolsActive"
+				},
 				{
 					"command": "pgsql-tools.schemaDiff",
 					"when": "pgsqlToolsActive"
@@ -224,6 +243,12 @@
 				"key": "ctrl+shift+x",
 				"mac": "cmd+shift+x",
 				"when": "editorTextFocus && editorLangId == sql"
+			},
+			{
+				"command": "pgsql-tools.showHealth",
+				"key": "ctrl+shift+h",
+				"mac": "cmd+shift+h",
+				"when": "pgsqlToolsActive"
 			}
 		]
 	},

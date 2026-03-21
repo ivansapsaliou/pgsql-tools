@@ -123,7 +123,7 @@ async function activate(context) {
         schemaDiff_1.SchemaDiffCommand.register(queryExecutor, connectionManager, resultsViewProvider),
         showERD_1.ShowERDCommand.register(queryExecutor, connectionManager, resultsViewProvider),
         // ── Health / Diagnostics ──────────────────────────────────────────────
-        ...healthCommands_1.HealthCommands.registerAll(queryExecutor, connectionManager, resultsViewProvider),
+        ...healthCommands_1.HealthCommands.registerAll(queryExecutor, connectionManager, context),
         // ── Explain ───────────────────────────────────────────────────────────
         explainQuery_1.ExplainQueryCommand.register(queryExecutor, connectionManager, resultsViewProvider)
     ];

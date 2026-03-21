@@ -148,7 +148,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		ShowERDCommand.register(queryExecutor, connectionManager, resultsViewProvider),
 
 		// ── Health / Diagnostics ──────────────────────────────────────────────
-		...HealthCommands.registerAll(queryExecutor, connectionManager, resultsViewProvider),
+		...HealthCommands.registerAll(queryExecutor, connectionManager, context),
 
 		// ── Explain ───────────────────────────────────────────────────────────
 		ExplainQueryCommand.register(queryExecutor, connectionManager, resultsViewProvider)
