@@ -10,6 +10,10 @@ import { ResultsViewProvider } from './views/resultsPanel';
 import { SQLCompletionProvider } from './language/sqlCompletionProvider';
 import { SQLHoverProvider } from './language/sqlHoverProvider';
 import { ExecuteSqlFileCommand } from './commands/executeSqlFile';
+import { SchemaDiffCommand } from './commands/schemaDiff';
+import { ShowERDCommand } from './commands/showERD';
+import { HealthCommands } from './commands/healthCommands';
+import { ExplainQueryCommand } from './commands/explainQuery';
 
 let connectionManager: ConnectionManager;
 let databaseTreeProvider: PostgreSQLTreeDataProvider;
@@ -137,7 +141,17 @@ export async function activate(context: vscode.ExtensionContext) {
 			}
 		}),
 
-		ExecuteSqlFileCommand.register(queryExecutor, connectionManager, resultsViewProvider)
+		ExecuteSqlFileCommand.register(queryExecutor, connectionManager, resultsViewProvider),
+
+		// ── Introspection & Generation ────────────────────────────────────────
+		SchemaDiffCommand.register(queryExecutor, connectionManager, resultsViewProvider),
+		ShowERDCommand.register(queryExecutor, connectionManager, resultsViewProvider),
+
+		// ── Health / Diagnostics ──────────────────────────────────────────────
+		...HealthCommands.registerAll(queryExecutor, connectionManager, resultsViewProvider),
+
+		// ── Explain ───────────────────────────────────────────────────────────
+		ExplainQueryCommand.register(queryExecutor, connectionManager, resultsViewProvider)
 	];
 
 	const databaseViewVisibilityListener = databaseTreeView.onDidChangeVisibility((e) => {

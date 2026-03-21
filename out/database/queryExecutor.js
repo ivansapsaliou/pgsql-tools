@@ -10,6 +10,12 @@ class QueryExecutor {
         if (!client) {
             throw new Error('No active database connection');
         }
+        return this.executeQueryOnClient(client, query);
+    }
+    /**
+     * Execute a query on a specific pg.Client (without changing the active connection).
+     */
+    async executeQueryOnClient(client, query) {
         try {
             const result = await client.query(query);
             return {

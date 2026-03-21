@@ -15,15 +15,26 @@ var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (
 }) : function(o, v) {
     o["default"] = v;
 });
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.deactivate = exports.activate = void 0;
+exports.activate = activate;
+exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const treeDataProvider_1 = require("./providers/treeDataProvider");
 const connectionsTreeProvider_1 = require("./providers/connectionsTreeProvider");
@@ -36,6 +47,10 @@ const resultsPanel_1 = require("./views/resultsPanel");
 const sqlCompletionProvider_1 = require("./language/sqlCompletionProvider");
 const sqlHoverProvider_1 = require("./language/sqlHoverProvider");
 const executeSqlFile_1 = require("./commands/executeSqlFile");
+const schemaDiff_1 = require("./commands/schemaDiff");
+const showERD_1 = require("./commands/showERD");
+const healthCommands_1 = require("./commands/healthCommands");
+const explainQuery_1 = require("./commands/explainQuery");
 let connectionManager;
 let databaseTreeProvider;
 let connectionsTreeProvider;
@@ -114,7 +129,14 @@ async function activate(context) {
                 vscode.window.showInformationMessage(`Selected connection: ${node.label}`);
             }
         }),
-        executeSqlFile_1.ExecuteSqlFileCommand.register(queryExecutor, connectionManager, resultsViewProvider)
+        executeSqlFile_1.ExecuteSqlFileCommand.register(queryExecutor, connectionManager, resultsViewProvider),
+        // ── Introspection & Generation ────────────────────────────────────────
+        schemaDiff_1.SchemaDiffCommand.register(queryExecutor, connectionManager, resultsViewProvider),
+        showERD_1.ShowERDCommand.register(queryExecutor, connectionManager, resultsViewProvider),
+        // ── Health / Diagnostics ──────────────────────────────────────────────
+        ...healthCommands_1.HealthCommands.registerAll(queryExecutor, connectionManager, resultsViewProvider),
+        // ── Explain ───────────────────────────────────────────────────────────
+        explainQuery_1.ExplainQueryCommand.register(queryExecutor, connectionManager, resultsViewProvider)
     ];
     const databaseViewVisibilityListener = databaseTreeView.onDidChangeVisibility((e) => {
         if (e.visible)
@@ -126,9 +148,7 @@ async function activate(context) {
     });
     context.subscriptions.push(...commands, databaseViewVisibilityListener, connectionsViewVisibilityListener);
 }
-exports.activate = activate;
 function deactivate() {
     connectionManager?.closeAllConnections();
 }
-exports.deactivate = deactivate;
 //# sourceMappingURL=extension.js.map

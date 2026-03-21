@@ -22,6 +22,10 @@ export declare class ConnectionManager {
      */
     restoreConnections(): Promise<void>;
     getActiveConnection(): pg.Client | null;
+    /**
+     * Get a specific pg.Client by connection name without changing the active connection.
+     */
+    getConnectionByName(name: string): pg.Client | null;
     setActiveConnection(name: string): void;
     getConnections(): string[];
     /** Returns all saved connection names (including ones not yet connected). */
