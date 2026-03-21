@@ -1,3 +1,4 @@
+import * as pg from 'pg';
 import { ConnectionManager } from './connectionManager';
 export interface QueryResult {
     rows: any[];
@@ -29,6 +30,10 @@ export declare class QueryExecutor {
     private connectionManager;
     constructor(connectionManager: ConnectionManager);
     executeQuery(query: string): Promise<QueryResult>;
+    /**
+     * Execute a query on a specific pg.Client (without changing the active connection).
+     */
+    executeQueryOnClient(client: pg.Client, query: string): Promise<QueryResult>;
     getSchemata(): Promise<string[]>;
     getTables(schema: string): Promise<string[]>;
     getColumns(schema: string, table: string): Promise<any[]>;

@@ -82,6 +82,41 @@
 			{
 				"command": "pgsql-tools.selectConnection",
 				"title": "PostgreSQL: Select Connection"
+			},
+			{
+				"command": "pgsql-tools.schemaDiff",
+				"title": "PostgreSQL: Schema Diff…",
+				"icon": "$(diff)"
+			},
+			{
+				"command": "pgsql-tools.showERD",
+				"title": "PostgreSQL: Show ER Diagram",
+				"icon": "$(type-hierarchy)"
+			},
+			{
+				"command": "pgsql-tools.healthSlowQueries",
+				"title": "PostgreSQL: Health — Slow Queries",
+				"icon": "$(watch)"
+			},
+			{
+				"command": "pgsql-tools.healthLocks",
+				"title": "PostgreSQL: Health — Locks",
+				"icon": "$(lock)"
+			},
+			{
+				"command": "pgsql-tools.healthSizes",
+				"title": "PostgreSQL: Health — Table & Index Sizes",
+				"icon": "$(database)"
+			},
+			{
+				"command": "pgsql-tools.healthVacuum",
+				"title": "PostgreSQL: Health — Vacuum / Analyze",
+				"icon": "$(symbol-misc)"
+			},
+			{
+				"command": "pgsql-tools.explainQuery",
+				"title": "PostgreSQL: Explain Query",
+				"icon": "$(search)"
 			}
 		],
 		"menus": {
@@ -89,6 +124,11 @@
 				{
 					"command": "pgsql-tools.executeSqlFile",
 					"when": "resourceLangId == sql",
+					"group": "navigation"
+				},
+				{
+					"command": "pgsql-tools.explainQuery",
+					"when": "editorTextFocus && editorLangId == sql",
 					"group": "navigation"
 				}
 			],
@@ -107,6 +147,16 @@
 					"command": "pgsql-tools.openQueryFile",
 					"when": "view == pgsqlDatabases",
 					"group": "navigation"
+				},
+				{
+					"command": "pgsql-tools.schemaDiff",
+					"when": "view == pgsqlDatabases || view == pgsqlConnections",
+					"group": "navigation"
+				},
+				{
+					"command": "pgsql-tools.showERD",
+					"when": "view == pgsqlDatabases || view == pgsqlConnections",
+					"group": "navigation"
 				}
 			],
 			"view/item/context": [
@@ -119,6 +169,46 @@
 					"command": "pgsql-tools.deleteConnection",
 					"when": "view == pgsqlConnections && viewItem == connection",
 					"group": "inline"
+				},
+				{
+					"command": "pgsql-tools.showERD",
+					"when": "view == pgsqlConnections && viewItem == connection",
+					"group": "context"
+				},
+				{
+					"command": "pgsql-tools.schemaDiff",
+					"when": "view == pgsqlConnections && viewItem == connection",
+					"group": "context"
+				}
+			],
+			"commandPalette": [
+				{
+					"command": "pgsql-tools.schemaDiff",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.showERD",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.healthSlowQueries",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.healthLocks",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.healthSizes",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.healthVacuum",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.explainQuery",
+					"when": "pgsqlToolsActive"
 				}
 			]
 		},
@@ -127,6 +217,12 @@
 				"command": "pgsql-tools.executeSqlFile",
 				"key": "ctrl+shift+e",
 				"mac": "cmd+shift+e",
+				"when": "editorTextFocus && editorLangId == sql"
+			},
+			{
+				"command": "pgsql-tools.explainQuery",
+				"key": "ctrl+shift+x",
+				"mac": "cmd+shift+x",
 				"when": "editorTextFocus && editorLangId == sql"
 			}
 		]

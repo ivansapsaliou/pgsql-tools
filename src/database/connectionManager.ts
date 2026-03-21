@@ -129,6 +129,13 @@ export class ConnectionManager {
 		return null;
 	}
 
+	/**
+	 * Get a specific pg.Client by connection name without changing the active connection.
+	 */
+	getConnectionByName(name: string): pg.Client | null {
+		return this.connections.get(name) ?? null;
+	}
+
 	setActiveConnection(name: string): void {
 		if (this.connections.has(name)) {
 			this.activeConnection = name;

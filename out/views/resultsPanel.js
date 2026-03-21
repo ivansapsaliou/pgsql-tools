@@ -15,13 +15,23 @@ var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (
 }) : function(o, v) {
     o["default"] = v;
 });
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ResultsViewProvider = void 0;
 const vscode = __importStar(require("vscode"));
@@ -94,6 +104,17 @@ class ResultsViewProvider {
         await vscode.commands.executeCommand('pgsqlResults.focus');
         // После focus _view уже будет назначен
         this.updateUI();
+    }
+    /**
+     * Show rich content (html/json/erd) in the Results Panel.
+     * Does not affect the existing table results — calling show() afterwards
+     * will restore the interactive table view.
+     */
+    async showRichContent(payload) {
+        await vscode.commands.executeCommand('pgsqlResults.focus');
+        if (!this._view)
+            return;
+        this._view.webview.html = this.getRichHtml(payload);
     }
     updateUI() {
         if (!this._view || !this.currentResults)
@@ -766,6 +787,276 @@ class ResultsViewProvider {
 	</script>
 	</body>
 	</html>`;
+    }
+    getRichHtml(payload) {
+        const { type, title, content } = payload;
+        let bodyContent = '';
+        if (type === 'json') {
+            // Pretty-print JSON with syntax highlighting
+            let prettyJson = content;
+            try {
+                prettyJson = JSON.stringify(JSON.parse(content), null, 2);
+            }
+            catch { /* use as-is */ }
+            bodyContent = `
+				<div class="rich-toolbar">
+					<span class="rich-title">${this.escapeHtml(title)}</span>
+					<button class="btn" onclick="copyContent()">$(copy) Copy</button>
+				</div>
+				<div class="json-wrap">
+					<pre id="jsonContent" class="json-content">${this.escapeHtml(prettyJson)}</pre>
+				</div>
+				<script>
+					function copyContent() {
+						navigator.clipboard.writeText(document.getElementById('jsonContent').textContent || '')
+							.catch(() => {});
+					}
+				<\/script>`;
+        }
+        else if (type === 'erd') {
+            // ERD view: visual HTML layout + Mermaid code for mermaid.live
+            bodyContent = `
+				<div class="rich-toolbar">
+					<span class="rich-title">${this.escapeHtml(title)}</span>
+					<button class="btn" onclick="copyMermaid()">Copy Mermaid</button>
+				</div>
+				${content}
+				<script>
+					function copyMermaid() {
+						const el = document.getElementById('mermaidCode');
+						if (el) navigator.clipboard.writeText(el.textContent || '').catch(() => {});
+					}
+				<\/script>`;
+        }
+        else {
+            // type === 'html'
+            bodyContent = `
+				<div class="rich-toolbar">
+					<span class="rich-title">${this.escapeHtml(title)}</span>
+				</div>
+				${content}`;
+        }
+        return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+	*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+	html, body {
+		width: 100%; height: 100%;
+		font-family: var(--vscode-font-family);
+		font-size: var(--vscode-font-size);
+		background: var(--vscode-panel-background);
+		color: var(--vscode-foreground);
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+	}
+
+	.rich-toolbar {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 4px 8px;
+		background: var(--vscode-editorGroupHeader-tabsBackground);
+		border-bottom: 1px solid var(--vscode-panel-border);
+		flex-shrink: 0;
+		height: 35px;
+	}
+
+	.rich-title {
+		font-weight: 600;
+		font-size: 12px;
+		flex: 1;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.btn {
+		background: var(--vscode-button-background);
+		color: var(--vscode-button-foreground);
+		border: none;
+		padding: 3px 8px;
+		font-size: 11px;
+		cursor: pointer;
+		border-radius: 2px;
+		white-space: nowrap;
+	}
+	.btn:hover { background: var(--vscode-button-hoverBackground); }
+
+	/* ── JSON VIEW ── */
+	.json-wrap {
+		flex: 1;
+		overflow: auto;
+		padding: 8px;
+	}
+
+	.json-content {
+		font-family: var(--vscode-editor-font-family, monospace);
+		font-size: var(--vscode-editor-font-size, 13px);
+		white-space: pre-wrap;
+		word-break: break-all;
+		line-height: 1.5;
+	}
+
+	/* ── HTML / DIFF / ERD SCROLL AREA ── */
+	.rich-body {
+		flex: 1;
+		overflow: auto;
+		padding: 8px 12px;
+	}
+
+	/* ── DIFF VIEW ── */
+	.diff-section { margin-bottom: 16px; }
+	.diff-section h3 {
+		font-size: 12px;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--vscode-foreground);
+		padding: 6px 0 4px;
+		border-bottom: 1px solid var(--vscode-panel-border);
+		margin-bottom: 6px;
+	}
+
+	.diff-table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 12px;
+	}
+	.diff-table th {
+		background: var(--vscode-editorGroupHeader-tabsBackground);
+		padding: 4px 8px;
+		text-align: left;
+		font-weight: 600;
+		border: 1px solid var(--vscode-panel-border);
+	}
+	.diff-table td {
+		padding: 3px 8px;
+		border: 1px solid var(--vscode-panel-border);
+		vertical-align: top;
+		word-break: break-word;
+	}
+	.diff-added { background: rgba(87,171,90,0.12); color: var(--vscode-gitDecoration-addedResourceForeground, #57ab5a); }
+	.diff-removed { background: rgba(229,83,75,0.12); color: var(--vscode-gitDecoration-deletedResourceForeground, #e5534b); }
+	.diff-changed { background: rgba(210,153,34,0.12); color: var(--vscode-gitDecoration-modifiedResourceForeground, #d2a22a); }
+	.diff-same { color: var(--vscode-descriptionForeground); }
+
+	/* ── ERD VIEW ── */
+	.erd-container {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 12px;
+		padding: 8px;
+	}
+
+	.erd-table {
+		border: 1px solid var(--vscode-panel-border);
+		border-radius: 4px;
+		min-width: 160px;
+		max-width: 260px;
+		font-size: 11px;
+		overflow: hidden;
+	}
+
+	.erd-table-name {
+		background: var(--vscode-button-background);
+		color: var(--vscode-button-foreground);
+		padding: 5px 8px;
+		font-weight: 700;
+		font-size: 12px;
+		text-align: center;
+	}
+
+	.erd-columns { padding: 4px 0; }
+
+	.erd-col {
+		display: flex;
+		justify-content: space-between;
+		gap: 8px;
+		padding: 2px 8px;
+		font-size: 11px;
+	}
+	.erd-col:hover { background: var(--vscode-list-hoverBackground); }
+
+	.erd-col-name { font-weight: 500; }
+	.erd-col-type { color: var(--vscode-descriptionForeground); font-style: italic; }
+	.erd-col-pk { color: var(--vscode-gitDecoration-addedResourceForeground, #57ab5a); font-weight: 700; margin-right: 2px; }
+	.erd-col-fk { color: var(--vscode-gitDecoration-modifiedResourceForeground, #d2a22a); font-weight: 700; margin-right: 2px; }
+
+	.erd-refs {
+		border-top: 1px solid var(--vscode-panel-border);
+		padding: 4px 8px;
+		font-size: 10px;
+		color: var(--vscode-descriptionForeground);
+	}
+
+	.erd-ref-row { padding: 1px 0; }
+
+	.mermaid-section {
+		margin-top: 16px;
+		border-top: 1px solid var(--vscode-panel-border);
+		padding-top: 8px;
+	}
+	.mermaid-label {
+		font-size: 11px;
+		font-weight: 600;
+		color: var(--vscode-descriptionForeground);
+		margin-bottom: 4px;
+	}
+	.mermaid-code {
+		font-family: var(--vscode-editor-font-family, monospace);
+		font-size: 11px;
+		background: var(--vscode-editor-background);
+		border: 1px solid var(--vscode-panel-border);
+		border-radius: 3px;
+		padding: 8px;
+		white-space: pre;
+		overflow-x: auto;
+		color: var(--vscode-foreground);
+	}
+
+	/* ── HEALTH / TABLE VIEW ── */
+	.health-table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 12px;
+	}
+	.health-table th {
+		background: var(--vscode-editorGroupHeader-tabsBackground);
+		padding: 5px 8px;
+		text-align: left;
+		font-weight: 600;
+		border: 1px solid var(--vscode-panel-border);
+		white-space: nowrap;
+	}
+	.health-table td {
+		padding: 4px 8px;
+		border: 1px solid var(--vscode-panel-border);
+		vertical-align: top;
+		word-break: break-word;
+		max-width: 400px;
+	}
+	.health-table tr:nth-child(even) td {
+		background: var(--vscode-list-hoverBackground);
+	}
+	.badge-warn { color: #d2a22a; font-weight: 700; }
+	.badge-ok { color: #57ab5a; font-weight: 700; }
+	.badge-crit { color: #e5534b; font-weight: 700; }
+	.empty-state {
+		padding: 20px;
+		text-align: center;
+		color: var(--vscode-descriptionForeground);
+		font-style: italic;
+	}
+</style>
+</head>
+<body>
+${bodyContent}
+</body>
+</html>`;
     }
     escapeHtml(text) {
         const map = {
