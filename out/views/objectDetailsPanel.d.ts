@@ -7,7 +7,7 @@ export declare class ObjectDetailsPanel {
     private static currentSchema;
     private static currentTable;
     static show(context: vscode.ExtensionContext, schema: string, objectName: string, objectType: string, queryExecutor: QueryExecutor, connectionManager: ConnectionManager, resultsViewProvider?: ResultsViewProvider): Promise<void>;
+    private static fetchColumnDetails;
     private static getHtml;
-    private static escapeHtml;
 }
 //# sourceMappingURL=objectDetailsPanel.d.ts.map

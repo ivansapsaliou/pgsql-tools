@@ -26,6 +26,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ConnectionManager = void 0;
 const vscode = __importStar(require("vscode"));
 const pg = __importStar(require("pg"));
+const sshTunnel_1 = require("./sshTunnel");
 const CONNECTIONS_KEY = 'pgsqlConnections';
 class ConnectionManager {
     constructor(context) {
@@ -36,23 +37,28 @@ class ConnectionManager {
     // ── Public API ────────────────────────────────────────────────────────────
     async addConnection(config) {
         try {
+            let host = config.host;
+            let port = config.port;
+            let tunnel;
+            // Если задан SSH — открываем туннель
+            if (config.ssh) {
+                tunnel = await (0, sshTunnel_1.openSshTunnel)(config.ssh, config.host, config.port);
+                host = '127.0.0.1';
+                port = tunnel.localPort;
+            }
             const client = new pg.Client({
-                host: config.host,
-                port: config.port,
+                host,
+                port,
                 database: config.database,
                 user: config.user,
-                password: config.password
+                password: config.password,
             });
             await client.connect();
-            // Handle unexpected disconnects
             client.on('error', (err) => {
                 console.error(`Connection "${config.name}" error:`, err.message);
-                this.connections.delete(config.name);
-                if (this.activeConnection === config.name) {
-                    this.activeConnection = this.connections.keys().next().value ?? null;
-                }
+                this.removeActiveEntry(config.name);
             });
-            this.connections.set(config.name, client);
+            this.connections.set(config.name, { client, tunnel });
             this.activeConnection = config.name;
             await this.saveConnection(config);
             return true;
@@ -63,70 +69,62 @@ class ConnectionManager {
         }
     }
     async removeConnection(name) {
-        const client = this.connections.get(name);
-        if (client) {
-            try {
-                await client.end();
-            }
-            catch { /* ignore */ }
-            this.connections.delete(name);
-        }
-        if (this.activeConnection === name) {
-            this.activeConnection = this.connections.keys().next().value ?? null;
-        }
+        await this.removeActiveEntry(name);
         await this.deleteConnection(name);
     }
     /**
-     * Restore persisted connections on startup.
-     * Attempts to reconnect each saved connection using the stored password.
-     * Silently skips connections that fail (e.g. server not reachable).
+     * Восстанавливает сохранённые подключения при старте.
      */
     async restoreConnections() {
         const saved = this.getSavedList();
         for (const conn of saved) {
             const password = await this.loadPassword(conn.name);
             if (password === undefined)
-                continue; // no password stored — skip
+                continue;
+            const sshPassword = conn.ssh
+                ? await this.loadSshPassword(conn.name)
+                : undefined;
+            const sshPassphrase = conn.ssh
+                ? await this.loadSshPassphrase(conn.name)
+                : undefined;
             try {
-                const client = new pg.Client({
-                    host: conn.host,
-                    port: conn.port,
-                    database: conn.database,
-                    user: conn.user,
-                    password
-                });
+                let host = conn.host;
+                let port = conn.port;
+                let tunnel;
+                if (conn.ssh) {
+                    const sshCfg = {
+                        ...conn.ssh,
+                        password: sshPassword,
+                        passphrase: sshPassphrase,
+                    };
+                    tunnel = await (0, sshTunnel_1.openSshTunnel)(sshCfg, conn.host, conn.port);
+                    host = '127.0.0.1';
+                    port = tunnel.localPort;
+                }
+                const client = new pg.Client({ host, port, database: conn.database, user: conn.user, password });
                 await client.connect();
                 client.on('error', (err) => {
                     console.error(`Connection "${conn.name}" error:`, err.message);
-                    this.connections.delete(conn.name);
-                    if (this.activeConnection === conn.name) {
-                        this.activeConnection = this.connections.keys().next().value ?? null;
-                    }
+                    this.removeActiveEntry(conn.name);
                 });
-                this.connections.set(conn.name, client);
-                // Make the first restored connection active
+                this.connections.set(conn.name, { client, tunnel });
                 if (!this.activeConnection) {
                     this.activeConnection = conn.name;
                 }
             }
             catch (err) {
-                // Server unreachable or password changed — leave it in the saved list
-                // but don't add to active connections
                 console.warn(`Could not restore connection "${conn.name}":`, err);
             }
         }
     }
     getActiveConnection() {
         if (this.activeConnection) {
-            return this.connections.get(this.activeConnection) ?? null;
+            return this.connections.get(this.activeConnection)?.client ?? null;
         }
         return null;
     }
-    /**
-     * Get a specific pg.Client by connection name without changing the active connection.
-     */
     getConnectionByName(name) {
-        return this.connections.get(name) ?? null;
+        return this.connections.get(name)?.client ?? null;
     }
     setActiveConnection(name) {
         if (this.connections.has(name)) {
@@ -136,35 +134,63 @@ class ConnectionManager {
     getConnections() {
         return Array.from(this.connections.keys());
     }
-    /** Returns all saved connection names (including ones not yet connected). */
     getSavedConnectionNames() {
-        return this.getSavedList().map(c => c.name);
+        return this.getSavedList().map((c) => c.name);
     }
     getActiveConnectionName() {
         return this.activeConnection;
     }
     async closeAllConnections() {
-        for (const client of this.connections.values()) {
+        for (const [, entry] of this.connections) {
             try {
-                await client.end();
+                await entry.client.end();
+            }
+            catch { /* ignore */ }
+            try {
+                entry.tunnel?.close();
             }
             catch { /* ignore */ }
         }
         this.connections.clear();
         this.activeConnection = null;
     }
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    async removeActiveEntry(name) {
+        const entry = this.connections.get(name);
+        if (entry) {
+            try {
+                await entry.client.end();
+            }
+            catch { /* ignore */ }
+            try {
+                entry.tunnel?.close();
+            }
+            catch { /* ignore */ }
+            this.connections.delete(name);
+        }
+        if (this.activeConnection === name) {
+            this.activeConnection = this.connections.keys().next().value ?? null;
+        }
+    }
     // ── Persistence ───────────────────────────────────────────────────────────
     async saveConnection(config) {
-        // Save metadata (no password) in globalState
         const list = this.getSavedList();
-        const idx = list.findIndex(c => c.name === config.name);
+        const idx = list.findIndex((c) => c.name === config.name);
         const meta = {
             name: config.name,
             host: config.host,
             port: config.port,
             database: config.database,
-            user: config.user
+            user: config.user,
         };
+        if (config.ssh) {
+            meta.ssh = {
+                host: config.ssh.host,
+                port: config.ssh.port,
+                username: config.ssh.username,
+                privateKey: config.ssh.privateKey,
+            };
+        }
         if (idx >= 0) {
             list[idx] = meta;
         }
@@ -172,14 +198,28 @@ class ConnectionManager {
             list.push(meta);
         }
         await this.context.globalState.update(CONNECTIONS_KEY, list);
-        // Save password in SecretStorage
+        // Пароли в SecretStorage
         await this.context.secrets.store(`pgsql.password.${config.name}`, config.password);
+        if (config.ssh?.password) {
+            await this.context.secrets.store(`pgsql.ssh.password.${config.name}`, config.ssh.password);
+        }
+        if (config.ssh?.passphrase) {
+            await this.context.secrets.store(`pgsql.ssh.passphrase.${config.name}`, config.ssh.passphrase);
+        }
     }
     async deleteConnection(name) {
-        const list = this.getSavedList().filter(c => c.name !== name);
+        const list = this.getSavedList().filter((c) => c.name !== name);
         await this.context.globalState.update(CONNECTIONS_KEY, list);
         try {
             await this.context.secrets.delete(`pgsql.password.${name}`);
+        }
+        catch { /* ignore */ }
+        try {
+            await this.context.secrets.delete(`pgsql.ssh.password.${name}`);
+        }
+        catch { /* ignore */ }
+        try {
+            await this.context.secrets.delete(`pgsql.ssh.passphrase.${name}`);
         }
         catch { /* ignore */ }
     }
@@ -188,6 +228,12 @@ class ConnectionManager {
     }
     async loadPassword(name) {
         return this.context.secrets.get(`pgsql.password.${name}`);
+    }
+    async loadSshPassword(name) {
+        return this.context.secrets.get(`pgsql.ssh.password.${name}`);
+    }
+    async loadSshPassphrase(name) {
+        return this.context.secrets.get(`pgsql.ssh.passphrase.${name}`);
     }
 }
 exports.ConnectionManager = ConnectionManager;

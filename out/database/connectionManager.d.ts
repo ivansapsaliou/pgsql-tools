@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as pg from 'pg';
+import { SshConfig } from './sshTunnel';
 export interface ConnectionConfig {
     name: string;
     host: string;
@@ -7,6 +8,8 @@ export interface ConnectionConfig {
     database: string;
     user: string;
     password: string;
+    /** SSH-туннель (опционально) */
+    ssh?: SshConfig;
 }
 export declare class ConnectionManager {
     private connections;
@@ -16,25 +19,22 @@ export declare class ConnectionManager {
     addConnection(config: ConnectionConfig): Promise<boolean>;
     removeConnection(name: string): Promise<void>;
     /**
-     * Restore persisted connections on startup.
-     * Attempts to reconnect each saved connection using the stored password.
-     * Silently skips connections that fail (e.g. server not reachable).
+     * Восстанавливает сохранённые подключения при старте.
      */
     restoreConnections(): Promise<void>;
     getActiveConnection(): pg.Client | null;
-    /**
-     * Get a specific pg.Client by connection name without changing the active connection.
-     */
     getConnectionByName(name: string): pg.Client | null;
     setActiveConnection(name: string): void;
     getConnections(): string[];
-    /** Returns all saved connection names (including ones not yet connected). */
     getSavedConnectionNames(): string[];
     getActiveConnectionName(): string | null;
     closeAllConnections(): Promise<void>;
+    private removeActiveEntry;
     private saveConnection;
     private deleteConnection;
     private getSavedList;
     private loadPassword;
+    private loadSshPassword;
+    private loadSshPassphrase;
 }
 //# sourceMappingURL=connectionManager.d.ts.map

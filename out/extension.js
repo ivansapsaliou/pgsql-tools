@@ -26,7 +26,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.deactivate = exports.activate = void 0;
 const vscode = __importStar(require("vscode"));
 const treeDataProvider_1 = require("./providers/treeDataProvider");
-const connectionsTreeProvider_1 = require("./providers/connectionsTreeProvider");
 const connectionManager_1 = require("./database/connectionManager");
 const queryExecutor_1 = require("./database/queryExecutor");
 const connectionWebview_1 = require("./views/connectionWebview");
@@ -42,7 +41,6 @@ const healthCommands_1 = require("./commands/healthCommands");
 const explainQuery_1 = require("./commands/explainQuery");
 let connectionManager;
 let databaseTreeProvider;
-let connectionsTreeProvider;
 let queryExecutor;
 let sqlCompletionProvider;
 let resultsViewProvider;
@@ -50,92 +48,91 @@ async function activate(context) {
     console.log('pgsql-tools extension is now active!');
     connectionManager = new connectionManager_1.ConnectionManager(context);
     databaseTreeProvider = new treeDataProvider_1.PostgreSQLTreeDataProvider(connectionManager);
-    connectionsTreeProvider = new connectionsTreeProvider_1.ConnectionsTreeProvider(connectionManager);
     queryExecutor = new queryExecutor_1.QueryExecutor(connectionManager);
     sqlCompletionProvider = new sqlCompletionProvider_1.SQLCompletionProvider(queryExecutor, connectionManager);
     resultsViewProvider = new resultsPanel_1.ResultsViewProvider(context.extensionUri);
     vscode.commands.executeCommand('setContext', 'pgsqlToolsActive', true);
-    // Restore saved connections from previous session (passwords from SecretStorage)
+    // Восстанавливаем подключения из прошлой сессии
     await connectionManager.restoreConnections();
-    connectionsTreeProvider.refresh();
     databaseTreeProvider.refresh();
-    // Register WebviewViewProvider for Results Panel (bottom panel)
+    // Results Panel (нижняя панель)
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(resultsPanel_1.ResultsViewProvider.viewType, resultsViewProvider, { webviewOptions: { retainContextWhenHidden: true } }));
-    // Language providers
+    // SQL автодополнение и hover
     context.subscriptions.push(vscode.languages.registerCompletionItemProvider('sql', sqlCompletionProvider, '.', ' ', '\t'));
     context.subscriptions.push(vscode.languages.registerHoverProvider('sql', new sqlHoverProvider_1.SQLHoverProvider()));
-    // Tree Views
+    // Единое дерево
     const databaseTreeView = vscode.window.createTreeView('pgsqlDatabases', {
         treeDataProvider: databaseTreeProvider,
-        showCollapseAll: true
+        showCollapseAll: true,
     });
-    const connectionsTreeView = vscode.window.createTreeView('pgsqlConnections', {
-        treeDataProvider: connectionsTreeProvider,
-        showCollapseAll: false
-    });
-    // Commands
     const commands = [
+        // ── Подключение ─────────────────────────────────────────────────────
         vscode.commands.registerCommand('pgsql-tools.addConnection', () => {
-            connectionWebview_1.ConnectionWebview.show(context, connectionManager, databaseTreeProvider, connectionsTreeProvider);
+            connectionWebview_1.ConnectionWebview.show(context, connectionManager, () => {
+                databaseTreeProvider.refresh();
+                sqlCompletionProvider.refresh();
+            });
         }),
+        // ── Редактор запросов ────────────────────────────────────────────────
         vscode.commands.registerCommand('pgsql-tools.openQueryEditor', () => {
             queryEditorPanel_1.QueryEditorPanel.show(context, queryExecutor, connectionManager);
         }),
         vscode.commands.registerCommand('pgsql-tools.openQueryFile', async () => {
-            const document = await vscode.workspace.openTextDocument({
+            const doc = await vscode.workspace.openTextDocument({
                 language: 'sql',
-                content: `-- PostgreSQL Query\n-- Connection: ${connectionManager.getActiveConnectionName() || 'Not selected'}\n\n`
+                content: `-- PostgreSQL Query\n-- Connection: ${connectionManager.getActiveConnectionName() || 'Not selected'}\n\n`,
             });
-            await vscode.window.showTextDocument(document, vscode.ViewColumn.One);
+            await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
         }),
+        // ── Детали таблицы ───────────────────────────────────────────────────
         vscode.commands.registerCommand('pgsql-tools.viewTableDetails', async (node) => {
             const schema = node.parentSchema || 'public';
-            const tableName = node.label;
+            const tableName = node.parentTable || node.label;
             await objectDetailsPanel_1.ObjectDetailsPanel.show(context, schema, tableName, 'table', queryExecutor, connectionManager, resultsViewProvider);
         }),
+        // ── Refresh ──────────────────────────────────────────────────────────
         vscode.commands.registerCommand('pgsql-tools.refreshDatabases', () => {
             databaseTreeProvider.refresh();
             sqlCompletionProvider.refresh();
         }),
+        // ── Управление подключениями ─────────────────────────────────────────
         vscode.commands.registerCommand('pgsql-tools.deleteConnection', async (node) => {
-            if (node && node.label) {
-                const confirm = await vscode.window.showWarningMessage(`Delete connection "${node.label}"?`, 'Delete', 'Cancel');
-                if (confirm === 'Delete') {
-                    await connectionManager.removeConnection(node.label);
-                    connectionsTreeProvider.refresh();
-                    databaseTreeProvider.refresh();
-                    sqlCompletionProvider.refresh();
-                    vscode.window.showInformationMessage(`Connection "${node.label}" deleted`);
-                }
+            const name = node?.connectionName ?? node?.label;
+            if (!name)
+                return;
+            const confirm = await vscode.window.showWarningMessage(`Delete connection "${name}"?`, 'Delete', 'Cancel');
+            if (confirm === 'Delete') {
+                await connectionManager.removeConnection(name);
+                databaseTreeProvider.refresh();
+                sqlCompletionProvider.refresh();
+                vscode.window.showInformationMessage(`Connection "${name}" deleted`);
             }
         }),
         vscode.commands.registerCommand('pgsql-tools.selectConnection', (node) => {
-            if (node && node.label) {
-                connectionManager.setActiveConnection(node.label);
-                connectionsTreeProvider.refresh();
-                databaseTreeProvider.refresh();
-                sqlCompletionProvider.refresh();
-                vscode.window.showInformationMessage(`Selected connection: ${node.label}`);
-            }
+            const name = node?.connectionName ?? node?.label;
+            if (!name)
+                return;
+            connectionManager.setActiveConnection(name);
+            databaseTreeProvider.refresh();
+            sqlCompletionProvider.refresh();
+            vscode.window.showInformationMessage(`Active connection: ${name}`);
         }),
+        // ── SQL выполнение (F9 / Ctrl+Shift+E) ──────────────────────────────
         executeSqlFile_1.ExecuteSqlFileCommand.register(queryExecutor, connectionManager, resultsViewProvider),
-        // ── Introspection & Generation ────────────────────────────────────────
+        // ── Schema Diff ──────────────────────────────────────────────────────
         schemaDiff_1.SchemaDiffCommand.register(queryExecutor, connectionManager, resultsViewProvider),
-        showERD_1.ShowERDCommand.register(queryExecutor, connectionManager, resultsViewProvider),
-        // ── Health / Diagnostics ──────────────────────────────────────────────
+        // ── ERD (теперь отдельная панель) ────────────────────────────────────
+        showERD_1.ShowERDCommand.register(queryExecutor, connectionManager, context),
+        // ── Health ───────────────────────────────────────────────────────────
         ...healthCommands_1.HealthCommands.registerAll(queryExecutor, connectionManager, context),
-        // ── Explain ───────────────────────────────────────────────────────────
-        explainQuery_1.ExplainQueryCommand.register(queryExecutor, connectionManager, resultsViewProvider)
+        // ── Explain ──────────────────────────────────────────────────────────
+        explainQuery_1.ExplainQueryCommand.register(queryExecutor, connectionManager, resultsViewProvider),
     ];
-    const databaseViewVisibilityListener = databaseTreeView.onDidChangeVisibility((e) => {
+    const visibilityListener = databaseTreeView.onDidChangeVisibility((e) => {
         if (e.visible)
             databaseTreeProvider.refresh();
     });
-    const connectionsViewVisibilityListener = connectionsTreeView.onDidChangeVisibility((e) => {
-        if (e.visible)
-            connectionsTreeProvider.refresh();
-    });
-    context.subscriptions.push(...commands, databaseViewVisibilityListener, connectionsViewVisibilityListener);
+    context.subscriptions.push(...commands, visibilityListener);
 }
 exports.activate = activate;
 function deactivate() {
