@@ -127,7 +127,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		SchemaDiffCommand.register(queryExecutor, connectionManager, resultsViewProvider),
 
 		// ── ERD (теперь отдельная панель) ────────────────────────────────────
-		ShowERDCommand.register(queryExecutor, connectionManager, context),
+		...ShowERDCommand.register(queryExecutor, connectionManager, context),
 
 		// ── Health ───────────────────────────────────────────────────────────
 		...HealthCommands.registerAll(queryExecutor, connectionManager, context),

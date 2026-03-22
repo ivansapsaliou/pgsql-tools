@@ -122,7 +122,7 @@ async function activate(context) {
         // ── Schema Diff ──────────────────────────────────────────────────────
         schemaDiff_1.SchemaDiffCommand.register(queryExecutor, connectionManager, resultsViewProvider),
         // ── ERD (теперь отдельная панель) ────────────────────────────────────
-        showERD_1.ShowERDCommand.register(queryExecutor, connectionManager, context),
+        ...showERD_1.ShowERDCommand.register(queryExecutor, connectionManager, context),
         // ── Health ───────────────────────────────────────────────────────────
         ...healthCommands_1.HealthCommands.registerAll(queryExecutor, connectionManager, context),
         // ── Explain ──────────────────────────────────────────────────────────

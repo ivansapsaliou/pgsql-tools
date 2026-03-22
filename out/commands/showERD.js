@@ -28,10 +28,24 @@ const vscode = __importStar(require("vscode"));
 const erdPanel_1 = require("../views/erdPanel");
 class ShowERDCommand {
     static register(queryExecutor, connectionManager, context) {
-        return vscode.commands.registerCommand('pgsql-tools.showERD', async (node) => {
+        const disposables = [];
+        // ── Полная схема / выбор режима ──────────────────────────
+        disposables.push(vscode.commands.registerCommand('pgsql-tools.showERD', async (node) => {
             const connName = node?.connectionName ?? connectionManager.getActiveConnectionName() ?? undefined;
             await erdPanel_1.ERDPanel.show(context, queryExecutor, connectionManager, connName);
-        });
+        }));
+        // ── От конкретной таблицы (из контекстного меню дерева) ──
+        disposables.push(vscode.commands.registerCommand('pgsql-tools.showERDFromTable', async (node) => {
+            const connName = node?.connectionName ?? connectionManager.getActiveConnectionName() ?? undefined;
+            const schema = node?.parentSchema ?? 'public';
+            const tableName = node?.parentTable ?? node?.label ?? '';
+            if (!tableName) {
+                vscode.window.showErrorMessage('No table selected.');
+                return;
+            }
+            await erdPanel_1.ERDPanel.showFromTable(context, queryExecutor, connectionManager, schema, tableName, connName);
+        }));
+        return disposables;
     }
 }
 exports.ShowERDCommand = ShowERDCommand;

@@ -118,6 +118,11 @@
 				"command": "pgsql-tools.explainQuery",
 				"title": "PostgreSQL: Explain Query",
 				"icon": "$(search)"
+			},
+			{
+				"command": "pgsql-tools.showERDFromTable",
+				"title": "PostgreSQL: Show ER Diagram from This Table",
+				"icon": "$(type-hierarchy)"
 			}
 		],
 		"menus": {
@@ -190,6 +195,11 @@
 					"command": "pgsql-tools.schemaDiff",
 					"when": "view == pgsqlDatabases && viewItem == connection",
 					"group": "context@3"
+				},
+				{
+					"command": "pgsql-tools.showERDFromTable",
+					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == view)",
+					"group": "context@4"
 				}
 			],
 			"commandPalette": [
@@ -263,7 +273,7 @@
 	"devDependencies": {
 		"@types/node": "^18.0.0",
 		"@types/pg": "^8.10.0",
-		"@types/ssh2": "^1.15.5",
+		"@types/ssh2": "^1.15.0",
 		"@types/vscode": "^1.75.0",
 		"@typescript-eslint/eslint-plugin": "^5.48.0",
 		"@typescript-eslint/parser": "^5.48.0",
