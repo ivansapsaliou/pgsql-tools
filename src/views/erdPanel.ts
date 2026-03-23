@@ -118,6 +118,27 @@ export class ERDPanel {
 		);
 		this.panels.set(panelKey, panel);
 		panel.onDidDispose(() => this.panels.delete(panelKey));
+		
+		// Обработка сообщений из вебвью
+		panel.webview.onDidReceiveMessage(async (message) => {
+			if (message.command === 'exportPng') {
+				try {
+					const dataUrl = message.dataUrl;
+					const buffer = Uint8Array.from(atob(dataUrl.replace(/^data:image\/png;base64,/, '')), c => c.charCodeAt(0));
+					const uri = await vscode.window.showSaveDialog({
+						defaultUri: vscode.Uri.file('ERD-export.png'),
+						filters: { 'PNG Image': ['png'] }
+					});
+					if (uri) {
+						await vscode.workspace.fs.writeFile(uri, buffer);
+						vscode.window.showInformationMessage('ERD exported to: ' + uri.fsPath);
+					}
+				} catch (err) {
+					vscode.window.showErrorMessage('Export failed: ' + err);
+				}
+			}
+		});
+		
 		panel.webview.html = this.loadingHtml(panelTitle);
 
 		try {
@@ -154,7 +175,7 @@ export class ERDPanel {
 
 					progress.report({ message: 'Loading foreign keys…' });
 					const fksRes = await queryExecutor.executeQueryOnClient(client,
-						`SELECT tc.constraint_name,
+						`SELECT DISTINCT tc.constraint_name,
 								tc.table_name AS source_table,
 								kcu.column_name AS source_column,
 								ccu.table_name AS target_table,
@@ -163,11 +184,9 @@ export class ERDPanel {
 						INNER JOIN information_schema.key_column_usage kcu
 						ON kcu.constraint_name = tc.constraint_name 
 						AND kcu.table_schema = tc.table_schema
-						AND kcu.ordinal_position = 1
 						AND tc.table_name = kcu.table_name
 						INNER JOIN information_schema.constraint_column_usage ccu
 						ON ccu.constraint_name = tc.constraint_name
-						AND ccu.ordinal_position = 1
 						WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = '${esc(schemaName)}'
 						ORDER BY tc.table_name, tc.constraint_name`);
 
@@ -371,6 +390,7 @@ html, body { width:100%; height:100%; font-family:var(--font); font-size:13px;
 .btn { padding:3px 9px; background:var(--vscode-button-background);
 	color:var(--vscode-button-foreground); border:none; border-radius:2px; font-size:11px; cursor:pointer; white-space:nowrap; }
 .btn:hover { background:var(--vscode-button-hoverBackground); }
+.btn.active { background:var(--vscode-button-hoverBackground); font-weight:600; }
 .btn-ghost { background:transparent; color:var(--fg2); border:1px solid var(--border); }
 .btn-ghost:hover { color:var(--fg); background:rgba(255,255,255,0.06); }
 .btn-group { display:flex; gap:3px; }
@@ -405,14 +425,14 @@ html, body { width:100%; height:100%; font-family:var(--font); font-size:13px;
 .sidebar-head:hover { background:rgba(255,255,255,0.04); }
 .sidebar-head .chevron { transition:transform .15s; }
 .sidebar-head.collapsed .chevron { transform:rotate(-90deg); }
-.sidebar-body { overflow-y:auto; }
+.sidebar-body { overflow-y:auto; max-height:100%; }
 .sidebar-body.hidden { display:none; }
 
 .filter-input {
 	width:calc(100% - 16px); margin:5px 8px; padding:4px 8px;
 	background:var(--vscode-input-background); color:var(--vscode-input-foreground);
 	border:1px solid var(--vscode-input-border, transparent);
-	border-radius:2px; font-size:11px; outline:none;
+	border-radius:2px; font-size:11px; outline:none; flex-shrink:0;
 }
 .filter-input:focus { border-color:var(--accent); }
 
@@ -441,7 +461,7 @@ html, body { width:100%; height:100%; font-family:var(--font); font-size:13px;
 .fk-desc { flex:1; color:var(--fg2); overflow:hidden; }
 .fk-desc b { color:var(--fg); }
 
-.sidebar-actions { padding:6px 8px; display:flex; gap:4px; flex-wrap:wrap; }
+.sidebar-actions { padding:6px 8px; display:flex; gap:4px; flex-wrap:wrap; flex-shrink:0; }
 
 /* scrollbar sidebar */
 .sidebar-body::-webkit-scrollbar { width:6px; }
@@ -500,6 +520,7 @@ html, body { width:100%; height:100%; font-family:var(--font); font-size:13px;
 		<button class="btn btn-ghost" onclick="autoLayout()">⟳ Layout</button>
 		<button class="btn btn-ghost" onclick="selectAll(true)">☑ All</button>
 		<button class="btn btn-ghost" onclick="selectAll(false)">☐ None</button>
+		<button class="btn" onclick="exportDiagram()">⬇ Export</button>
 	</div>
 </div>
 
@@ -518,15 +539,15 @@ html, body { width:100%; height:100%; font-family:var(--font); font-size:13px;
 	<div class="sidebar" id="sidebar">
 
 		<!-- Tables section -->
-		<div class="sidebar-section">
+		<div class="sidebar-section" style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
 			<div class="sidebar-head" id="head-tables" onclick="toggleSection('tables')">
 				<span>Tables <span id="tbl-count" style="opacity:.6;font-weight:400"></span></span>
 				<span class="chevron">▾</span>
 			</div>
-			<div class="sidebar-body" id="body-tables">
+			<div class="sidebar-body" id="body-tables" style="flex:1; min-height:0;">
 				<input class="filter-input" id="tbl-filter" placeholder="Filter tables…"
 					oninput="filterTables(this.value)">
-				<div id="table-list"></div>
+				<div id="table-list" style="overflow-y:auto;"></div>
 				<div class="sidebar-actions">
 					<button class="btn btn-ghost" style="font-size:10px" onclick="selectTablesByLevel(0)">L0 only</button>
 					<button class="btn btn-ghost" style="font-size:10px" onclick="selectTablesByLevel(1)">L0+L1</button>
@@ -541,10 +562,10 @@ html, body { width:100%; height:100%; font-family:var(--font); font-size:13px;
 				<span>Relations <span id="fk-count" style="opacity:.6;font-weight:400"></span></span>
 				<span class="chevron">▾</span>
 			</div>
-			<div class="sidebar-body" id="body-fks" style="flex:1;">
+			<div class="sidebar-body" id="body-fks" style="flex:1; min-height:0;">
 				<input class="filter-input" id="fk-filter" placeholder="Filter relations…"
 					oninput="filterFks(this.value)">
-				<div id="fk-list"></div>
+				<div id="fk-list" style="overflow-y:auto;"></div>
 			</div>
 		</div>
 	</div>
@@ -718,7 +739,6 @@ function selectAll(on) {
 function selectTablesByLevel(maxL) {
 	hiddenTables.clear();
 	DATA.tables.forEach(t => { if (t.level > maxL) hiddenTables.add(t.name); });
-	// auto-hide FK where both sides hidden
 	buildTableList(document.getElementById('tbl-filter').value);
 	rebuildFkList();
 	updateStats(); render();
@@ -738,7 +758,7 @@ const ctx     = canvas.getContext('2d');
 const tooltip = document.getElementById('tooltip');
 const badge   = document.getElementById('zoom-badge');
 
-const COL_H = 22, HDR_H = 30, PAD_X = 12, MIN_W = 190;
+const COL_H = 22, HDR_H = 30, PAD_X = 12, MIN_W = 220, MAX_W = 420;
 const LEVEL_COLORS = ['#4d9cf5','#d2a22a','#4ec9b0','#c586c0','#f08080'];
 
 let scale = 1, offsetX = 0, offsetY = 0;
@@ -747,82 +767,206 @@ let dragTable = null, dragDX, dragDY;
 let hoveredTable = null, hoveredFk = null;
 
 // positions
-const tblState = {};   // name → {x,y,w,h}
+const tblState = {};   // name → {x,y,w,h,vx,vy}
 
 function buildTableState() {
-	const VIS = DATA.tables;
+	const VIS = visibleTables();
+	if (!VIS.length) return;
+
+	// === Динамические размеры на основе контента ===
+	const tableSizes = {};
+	let maxWidth = 250;
+	let maxHeight = 0;
+
+	for (const t of VIS) {
+		if (!tblState[t.name]) tblState[t.name] = {};
+		
+		// Расчёт ширины на основе контента
+		let w = 250;  // минимум
+		for (const col of t.columns) {
+			const len = col.name.length + col.type.length;
+			const neededWidth = len * 8 + 80;
+			w = Math.max(w, neededWidth);
+		}
+		w = Math.min(w, 520);  // максимум
+
+		// Высота
+		const h = HDR_H + Math.max(1, t.columns.length) * COL_H + 8;
+		
+		tableSizes[t.name] = { w, h };
+		maxWidth = Math.max(maxWidth, w);
+		maxHeight = Math.max(maxHeight, h);
+	}
+
+	// Фиксированные зазоры между таблицами
+	const COL_GAP = 80;   // зазор по горизонтали
+	const ROW_GAP = 100;  // зазор по вертикали
+	
+	// Сетка
 	const cols = Math.max(1, Math.ceil(Math.sqrt(VIS.length)));
 	VIS.forEach((t, i) => {
-		const w = Math.max(MIN_W,
-			t.columns.reduce((m,c) => Math.max(m, (c.name.length + c.type.length) * 6 + 60), MIN_W));
-		const h = HDR_H + t.columns.length * COL_H + 4;
-		const col = i % cols, row = Math.floor(i / cols);
-		tblState[t.name] = { x: 20 + col*(w+60), y: 20 + row*(h+50), w, h };
+		const size = tableSizes[t.name];
+		const col = i % cols;
+		const row = Math.floor(i / cols);
+		
+		// Позиция: учитываем maxWidth для всех колонок
+		const x = 60 + col * (maxWidth + COL_GAP);
+		const y = 60 + row * (maxHeight + ROW_GAP);
+		
+		tblState[t.name].x = x;
+		tblState[t.name].y = y;
+		tblState[t.name].w = size.w;
+		tblState[t.name].h = size.h;
+		if (!tblState[t.name].vx) tblState[t.name].vx = 0;
+		if (!tblState[t.name].vy) tblState[t.name].vy = 0;
 	});
 }
 
-// ── Force-directed layout ─────────────────────────────────────
+// ── Simple Grid Layout (надежный и быстрый) ─────────────────
 function autoLayout() {
 	const vt = visibleTables();
 	if (!vt.length) return;
 
-	const ITER = 100, REPEL = 15000, ATTRACT = 0.04;
-	const names = vt.map(t => t.name);
+	// Сортируем таблицы по наличию FK связей (связанные ближе друг к другу)
+	const tablesByConnections = [...vt].sort((a, b) => {
+		const aConnections = visibleFks().filter(fk => 
+			fk.fromTable === a.name || fk.toTable === a.name
+		).length;
+		const bConnections = visibleFks().filter(fk => 
+			fk.fromTable === b.name || fk.toTable === b.name
+		).length;
+		return bConnections - aConnections; // Больше связей = раньше
+	});
 
-	for (let iter = 0; iter < ITER; iter++) {
-		const dx = Object.fromEntries(names.map(n => [n, 0]));
-		const dy = Object.fromEntries(names.map(n => [n, 0]));
-
-		// Repulsion
-		for (let i = 0; i < names.length; i++) {
-			for (let j = i+1; j < names.length; j++) {
-				const a = tblState[names[i]], b = tblState[names[j]];
-				const ddx = (a.x+a.w/2) - (b.x+b.w/2);
-				const ddy = (a.y+a.h/2) - (b.y+b.h/2);
-				const dist = Math.sqrt(ddx*ddx+ddy*ddy) || 1;
-				const f = REPEL / (dist*dist);
-				dx[names[i]] += (ddx/dist)*f; dy[names[i]] += (ddy/dist)*f;
-				dx[names[j]] -= (ddx/dist)*f; dy[names[j]] -= (ddy/dist)*f;
-			}
-		}
-
-		// Attraction along visible FK edges
-		for (const fk of visibleFks()) {
-			const a = tblState[fk.fromTable], b = tblState[fk.toTable];
-			if (!a || !b) continue;
-			const ddx = (b.x+b.w/2) - (a.x+a.w/2);
-			const ddy = (b.y+b.h/2) - (a.y+a.h/2);
-			const dist = Math.sqrt(ddx*ddx+ddy*ddy) || 1;
-			const ideal = a.w/2 + b.w/2 + 100;
-			const f = ATTRACT * (dist - ideal);
-			dx[fk.fromTable] += (ddx/dist)*f; dy[fk.fromTable] += (ddy/dist)*f;
-			dx[fk.toTable]   -= (ddx/dist)*f; dy[fk.toTable]   -= (ddy/dist)*f;
-		}
-
-		const damp = 1 - iter/ITER;
-		for (const n of names) {
-			tblState[n].x += dx[n]*damp;
-			tblState[n].y += dy[n]*damp;
+	// === Находим максимальные размеры среди всех таблиц ===
+	let maxWidth = 250;
+	let maxHeight = 0;
+	for (const t of vt) {
+		const s = tblState[t.name];
+		if (s) {
+			maxWidth = Math.max(maxWidth, s.w);
+			maxHeight = Math.max(maxHeight, s.h);
 		}
 	}
 
-	// Normalise
-	let minX=Infinity, minY=Infinity;
-	for (const n of names) { minX=Math.min(minX,tblState[n].x); minY=Math.min(minY,tblState[n].y); }
-	for (const n of names) { tblState[n].x -= minX-20; tblState[n].y -= minY-20; }
+	// === Фиксированные зазоры ===
+	const COL_GAP = 80;   // зазор по горизонтали
+	const ROW_GAP = 100;  // зазор по вертикали
+
+	// === Расчет сетки ===
+	const count = vt.length;
+	const cols = Math.max(1, Math.ceil(Math.sqrt(count)));
+	const rows = Math.ceil(count / cols);
+
+	// === Размещение таблиц в сетке ===
+	for (let i = 0; i < tablesByConnections.length; i++) {
+		const t = tablesByConnections[i];
+		const s = tblState[t.name];
+		if (!s) continue;
+
+		const col = i % cols;
+		const row = Math.floor(i / cols);
+
+		// Позиция: все колонки используют maxWidth
+		const x = 60 + col * (maxWidth + COL_GAP);
+		const y = 60 + row * (maxHeight + ROW_GAP);
+
+		s.x = x;
+		s.y = y;
+		s.vx = 0;
+		s.vy = 0;
+	}
+
 	resetView();
 }
 
 function resetView() {
 	const vt = visibleTables();
 	if (!vt.length) return;
-	let maxX=0, maxY=0;
-	for (const t of vt) { const s=tblState[t.name]; if(s){maxX=Math.max(maxX,s.x+s.w); maxY=Math.max(maxY,s.y+s.h);} }
-	const vw=canvas.width, vh=canvas.height;
-	scale = Math.min(1.2, Math.min(vw/(maxX+40), vh/(maxY+40)));
-	offsetX = (vw - maxX*scale)/2;
-	offsetY = (vh - maxY*scale)/2;
+	let maxX = 0, maxY = 0;
+	for (const t of vt) {
+		const s = tblState[t.name];
+		if(s){
+			maxX = Math.max(maxX, s.x + s.w);
+			maxY = Math.max(maxY, s.y + s.h);
+		}
+	}
+	const vw = canvas.width, vh = canvas.height;
+	scale = Math.min(1.2, Math.min(vw / (maxX + 80), vh / (maxY + 80)));
+	offsetX = (vw - maxX * scale) / 2;
+	offsetY = (vh - maxY * scale) / 2;
 	render();
+}
+
+// ── Export diagram ───────────────────────────────────────────────
+function showToast(msg) {
+	const toast = document.getElementById('tooltip');
+	toast.textContent = msg;
+	toast.style.display = 'block';
+	toast.style.left = '50%';
+	toast.style.top = '20px';
+	toast.style.transform = 'translateX(-50%)';
+	toast.style.background = 'var(--vscode-notifications-background, #323233)';
+	toast.style.border = '1px solid var(--vscode-notifications-border, #007acc)';
+	toast.style.color = 'var(--vscode-notifications-foreground, #cccccc)';
+	setTimeout(() => { toast.style.display = 'none'; }, 4000);
+}
+
+function exportDiagram() {
+	const vt = visibleTables();
+	if (!vt.length) return;
+	
+	// Вычисляем границы диаграммы
+	let maxX = 0, maxY = 0;
+	for (const t of vt) {
+		const s = tblState[t.name];
+		if (s) {
+			maxX = Math.max(maxX, s.x + s.w);
+			maxY = Math.max(maxY, s.y + s.h);
+		}
+	}
+	
+	// Создаём offscreen canvas для экспорта
+	const padding = 40;
+	const exportScale = 2;  // 2x для высокого разрешения
+	const exportCanvas = document.createElement('canvas');
+	exportCanvas.width = (maxX + padding * 2) * exportScale;
+	exportCanvas.height = (maxY + padding * 2) * exportScale;
+	const exportCtx = exportCanvas.getContext('2d');
+	
+	// Белый фон
+	exportCtx.fillStyle = '#ffffff';
+	exportCtx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+	
+	// Масштабирование
+	exportCtx.scale(exportScale, exportScale);
+	exportCtx.translate(padding - offsetX / scale, padding - offsetY / scale);
+	
+	// Сохраняем текущий контекст
+	const oldCtx = ctx;
+	const oldScale = scale;
+	const oldOffsetX = offsetX;
+	const oldOffsetY = offsetY;
+	
+	// Временно устанавливаем параметры для экспорта
+	ctx = exportCtx;
+	scale = 1;
+	offsetX = 0;
+	offsetY = 0;
+	
+	// Рисуем
+	drawEdges();
+	for (const t of vt) drawTable(t, tblState[t.name]);
+	
+	// Восстанавливаем
+	ctx = oldCtx;
+	scale = oldScale;
+	offsetX = oldOffsetX;
+	offsetY = oldOffsetY;
+	
+	// Отправляем данные в VS Code для сохранения
+	const dataUrl = exportCanvas.toDataURL('image/png');
+	vscode.postMessage({ command: 'exportPng', dataUrl: dataUrl });
 }
 
 // ── Render ────────────────────────────────────────────────────
@@ -971,7 +1115,7 @@ function drawTable(tbl, s) {
 		ctx.beginPath(); ctx.moveTo(x+1,ry); ctx.lineTo(x+w-1,ry); ctx.stroke();
 
 		const midY = ry+COL_H/2;
-		let curX   = x+PAD_X;
+		let curX   = x + 8;
 
 		// PK/FK badge
 		if (col.isPk||col.isFk) {
@@ -984,21 +1128,25 @@ function drawTable(tbl, s) {
 			ctx.font = 'bold 8px sans-serif';
 			ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
 			ctx.fillText(lbl, curX+9, midY);
+			curX += 26;
+		} else {
+			curX += 10;
 		}
-		curX += 22;
 
 		// Column name
 		ctx.fillStyle   = col.isPk ? '#4ec9b0' : col.isFk ? '#d2a22a' : getCssVar('--fg');
 		ctx.font        = (col.isPk?'bold ':'') + '11px ' + getCssVar('--font');
 		ctx.textAlign   = 'left';
 		ctx.textBaseline= 'middle';
-		ctx.fillText(col.name, curX, midY, w-curX-PAD_X-72);
+		const availForName = Math.max(50, w - curX - 75);
+		ctx.fillText(col.name, curX, midY, availForName);
 
 		// Type (right)
 		ctx.fillStyle = getCssVar('--fg2');
-		ctx.font      = 'italic 10px ' + getCssVar('--font');
+		ctx.font      = 'italic 9px ' + getCssVar('--font');
 		ctx.textAlign = 'right';
-		ctx.fillText(col.type, x+w-PAD_X, midY, 80);
+		ctx.textBaseline = 'middle';
+		ctx.fillText(col.type, x + w - 8, midY, 70);
 	});
 
 	// Bottom rule
@@ -1122,12 +1270,13 @@ buildTableState();
 buildTableList();
 buildFkList();
 updateStats();
+render();
 
 setTimeout(()=>{
 	canvas.width =wrap.clientWidth  || 900;
 	canvas.height=wrap.clientHeight || 600;
-	autoLayout();
-}, 80);
+	resetView();
+}, 50);
 </script>
 </body>
 </html>`;
