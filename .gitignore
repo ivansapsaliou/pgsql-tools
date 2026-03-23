@@ -1,0 +1,10 @@
+# Ignore build artifacts and runtime-only files for the compiled VS Code extension
+node_modules/
+out/
+*.vsix
+*.map
+coverage/
+dist/
+.DS_Store
+.vscode-test/
+.env

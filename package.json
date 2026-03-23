@@ -1,0 +1,287 @@
+{
+	"name": "pgsql-tools",
+	"displayName": "PostgreSQL Tools",
+	"description": "PostgreSQL database management tool for VS Code",
+	"version": "0.1.0",
+	"publisher": "ivansapsaliou",
+	"icon": "resources/icon.png",
+	"engines": {
+		"vscode": "^1.75.0"
+	},
+	"categories": [
+		"Data Science"
+	],
+	"activationEvents": [],
+	"main": "./out/extension.js",
+	"contributes": {
+		"viewsContainers": {
+			"activitybar": [
+				{
+					"id": "pgsql-tools",
+					"title": "PostgreSQL Tools",
+					"icon": "resources/database-icon.svg"
+				}
+			]
+		},
+		"views": {
+			"pgsql-tools": [
+				{
+					"id": "pgsqlDatabases",
+					"name": "Databases",
+					"when": "true"
+				}
+			],
+			"panel": [
+				{
+					"type": "webview",
+					"id": "pgsqlResults",
+					"name": "Query Results"
+				}
+			]
+		},
+		"commands": [
+			{
+				"command": "pgsql-tools.addConnection",
+				"title": "PostgreSQL: Add Connection",
+				"icon": "$(add)"
+			},
+			{
+				"command": "pgsql-tools.openQueryEditor",
+				"title": "PostgreSQL: Open Query Editor",
+				"icon": "$(run)"
+			},
+			{
+				"command": "pgsql-tools.executeSqlFile",
+				"title": "PostgreSQL: Execute SQL (F9)",
+				"icon": "$(play)"
+			},
+			{
+				"command": "pgsql-tools.openQueryFile",
+				"title": "PostgreSQL: Open Query File",
+				"icon": "$(file)"
+			},
+			{
+				"command": "pgsql-tools.viewTableDetails",
+				"title": "PostgreSQL: View Table Details"
+			},
+			{
+				"command": "pgsql-tools.refreshDatabases",
+				"title": "PostgreSQL: Refresh",
+				"icon": "$(refresh)"
+			},
+			{
+				"command": "pgsql-tools.deleteConnection",
+				"title": "PostgreSQL: Delete Connection",
+				"icon": "$(trash)"
+			},
+			{
+				"command": "pgsql-tools.selectConnection",
+				"title": "PostgreSQL: Select Connection",
+				"icon": "$(plug)"
+			},
+			{
+				"command": "pgsql-tools.schemaDiff",
+				"title": "PostgreSQL: Schema Diff…",
+				"icon": "$(diff)"
+			},
+			{
+				"command": "pgsql-tools.showERD",
+				"title": "PostgreSQL: Show ER Diagram",
+				"icon": "$(type-hierarchy)"
+			},
+			{
+				"command": "pgsql-tools.showHealth",
+				"title": "PostgreSQL: Database Health",
+				"icon": "$(pulse)"
+			},
+			{
+				"command": "pgsql-tools.healthSlowQueries",
+				"title": "PostgreSQL: Health — Slow Queries",
+				"icon": "$(watch)"
+			},
+			{
+				"command": "pgsql-tools.healthLocks",
+				"title": "PostgreSQL: Health — Locks",
+				"icon": "$(lock)"
+			},
+			{
+				"command": "pgsql-tools.healthSizes",
+				"title": "PostgreSQL: Health — Table & Index Sizes",
+				"icon": "$(database)"
+			},
+			{
+				"command": "pgsql-tools.healthVacuum",
+				"title": "PostgreSQL: Health — Vacuum / Analyze",
+				"icon": "$(symbol-misc)"
+			},
+			{
+				"command": "pgsql-tools.explainQuery",
+				"title": "PostgreSQL: Explain Query",
+				"icon": "$(search)"
+			},
+			{
+				"command": "pgsql-tools.showERDFromTable",
+				"title": "PostgreSQL: Show ER Diagram from This Table",
+				"icon": "$(type-hierarchy)"
+			}
+		],
+		"menus": {
+			"editor/title": [
+				{
+					"command": "pgsql-tools.executeSqlFile",
+					"when": "resourceLangId == sql",
+					"group": "navigation"
+				},
+				{
+					"command": "pgsql-tools.explainQuery",
+					"when": "editorTextFocus && editorLangId == sql",
+					"group": "navigation"
+				}
+			],
+			"view/title": [
+				{
+					"command": "pgsql-tools.addConnection",
+					"when": "view == pgsqlDatabases",
+					"group": "navigation@1"
+				},
+				{
+					"command": "pgsql-tools.refreshDatabases",
+					"when": "view == pgsqlDatabases",
+					"group": "navigation@2"
+				},
+				{
+					"command": "pgsql-tools.openQueryFile",
+					"when": "view == pgsqlDatabases",
+					"group": "navigation@3"
+				},
+				{
+					"command": "pgsql-tools.schemaDiff",
+					"when": "view == pgsqlDatabases",
+					"group": "navigation@4"
+				},
+				{
+					"command": "pgsql-tools.showERD",
+					"when": "view == pgsqlDatabases",
+					"group": "navigation@5"
+				},
+				{
+					"command": "pgsql-tools.showHealth",
+					"when": "view == pgsqlDatabases",
+					"group": "navigation@6"
+				}
+			],
+			"view/item/context": [
+				{
+					"command": "pgsql-tools.selectConnection",
+					"when": "view == pgsqlDatabases && viewItem == connection",
+					"group": "inline@1"
+				},
+				{
+					"command": "pgsql-tools.deleteConnection",
+					"when": "view == pgsqlDatabases && viewItem == connection",
+					"group": "inline@2"
+				},
+				{
+					"command": "pgsql-tools.showHealth",
+					"when": "view == pgsqlDatabases && viewItem == connection",
+					"group": "context@1"
+				},
+				{
+					"command": "pgsql-tools.showERD",
+					"when": "view == pgsqlDatabases && viewItem == connection",
+					"group": "context@2"
+				},
+				{
+					"command": "pgsql-tools.schemaDiff",
+					"when": "view == pgsqlDatabases && viewItem == connection",
+					"group": "context@3"
+				},
+				{
+					"command": "pgsql-tools.showERDFromTable",
+					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == view)",
+					"group": "context@4"
+				}
+			],
+			"commandPalette": [
+				{
+					"command": "pgsql-tools.showHealth",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.schemaDiff",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.showERD",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.healthSlowQueries",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.healthLocks",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.healthSizes",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.healthVacuum",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.explainQuery",
+					"when": "pgsqlToolsActive"
+				}
+			]
+		},
+		"keybindings": [
+			{
+				"command": "pgsql-tools.executeSqlFile",
+				"key": "F9",
+				"when": "editorTextFocus && editorLangId == sql"
+			},
+			{
+				"command": "pgsql-tools.executeSqlFile",
+				"key": "ctrl+shift+e",
+				"mac": "cmd+shift+e",
+				"when": "editorTextFocus && editorLangId == sql"
+			},
+			{
+				"command": "pgsql-tools.explainQuery",
+				"key": "ctrl+shift+x",
+				"mac": "cmd+shift+x",
+				"when": "editorTextFocus && editorLangId == sql"
+			},
+			{
+				"command": "pgsql-tools.showHealth",
+				"key": "ctrl+shift+h",
+				"mac": "cmd+shift+h",
+				"when": "pgsqlToolsActive"
+			}
+		]
+	},
+	"scripts": {
+		"vscode:prepublish": "npm run compile",
+		"compile": "tsc -p ./",
+		"watch": "tsc -watch -p ./",
+		"pretest": "npm run compile && npm run lint",
+		"lint": "eslint src --ext ts"
+	},
+	"devDependencies": {
+		"@types/node": "^18.0.0",
+		"@types/pg": "^8.10.0",
+		"@types/ssh2": "^1.15.0",
+		"@types/vscode": "^1.75.0",
+		"@typescript-eslint/eslint-plugin": "^5.48.0",
+		"@typescript-eslint/parser": "^5.48.0",
+		"eslint": "^8.31.0",
+		"typescript": "^4.9.4"
+	},
+	"dependencies": {
+		"pg": "^8.11.0",
+		"ssh2": "^1.17.0"
+	}
+}
