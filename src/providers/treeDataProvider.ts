@@ -204,7 +204,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 						 ORDER BY table_name`
 					);
 					return res.rows.map((r) => {
-						const n = new TreeNode(
+						return new TreeNode(
 							r.table_name,
 							vscode.TreeItemCollapsibleState.None,
 							'table',
@@ -212,12 +212,6 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 							r.table_name,
 							connName
 						);
-						n.command = {
-							command: 'pgsql-tools.viewTableDetails',
-							title: 'View Table Details',
-							arguments: [n],
-						};
-						return n;
 					});
 				}
 
@@ -227,7 +221,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 						 WHERE table_schema = '${esc(schema)}' ORDER BY table_name`
 					);
 					return res.rows.map((r) => {
-						const n = new TreeNode(
+						return new TreeNode(
 							r.table_name,
 							vscode.TreeItemCollapsibleState.None,
 							'view',
@@ -235,12 +229,6 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 							r.table_name,
 							connName
 						);
-						n.command = {
-							command: 'pgsql-tools.viewTableDetails',
-							title: 'View View Details',
-							arguments: [n],
-						};
-						return n;
 					});
 				}
 
@@ -255,7 +243,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 						 ORDER BY routine_name`
 					);
 					return res.rows.map((r) => {
-						const n = new TreeNode(
+						return new TreeNode(
 							r.routine_name,
 							vscode.TreeItemCollapsibleState.None,
 							'function',
@@ -265,12 +253,6 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 							undefined,
 							{ returnType: r.return_type, specificName: r.specific_name }
 						);
-						n.command = {
-							command: 'pgsql-tools.viewTableDetails',
-							title: 'View Function Details',
-							arguments: [n],
-						};
-						return n;
 					});
 				}
 
@@ -285,7 +267,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 						 ORDER BY routine_name`
 					);
 					return res.rows.map((r) => {
-						const n = new TreeNode(
+						return new TreeNode(
 							r.routine_name,
 							vscode.TreeItemCollapsibleState.None,
 							'procedure',
@@ -295,12 +277,6 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 							undefined,
 							{ returnType: r.return_type, specificName: r.specific_name }
 						);
-						n.command = {
-							command: 'pgsql-tools.viewTableDetails',
-							title: 'View Procedure Details',
-							arguments: [n],
-						};
-						return n;
 					});
 				}
 
