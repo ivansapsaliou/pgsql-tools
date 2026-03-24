@@ -19,9 +19,19 @@ let databaseTreeProvider: PostgreSQLTreeDataProvider;
 let queryExecutor: QueryExecutor;
 let sqlCompletionProvider: SQLCompletionProvider;
 let resultsViewProvider: ResultsViewProvider;
+let outputChannel: vscode.OutputChannel;
+
+function log(message: string) {
+	outputChannel?.appendLine(message);
+	console.log('[pgsql-tools] ' + message);
+}
 
 export async function activate(context: vscode.ExtensionContext) {
 	console.log('pgsql-tools extension is now active!');
+
+	// Create output channel for logging
+	outputChannel = vscode.window.createOutputChannel('PostgreSQL Tools');
+	outputChannel.show();
 
 	connectionManager = new ConnectionManager(context);
 	databaseTreeProvider = new PostgreSQLTreeDataProvider(connectionManager);
@@ -58,6 +68,17 @@ export async function activate(context: vscode.ExtensionContext) {
 		showCollapseAll: true,
 	});
 
+	// Обработка клика - открытие деталей объекта
+	databaseTreeView.onDidChangeSelection((e) => {
+		const selection = e.selection;
+		if (selection && selection.length > 0) {
+			const item = selection[0];
+			const contextValue = (item as any).contextValue;
+			// Для таблиц, представлений, функций, процедур команда уже привязана через TreeItem.command
+			// Для других типов ничего не делаем
+		}
+	});
+
 	const commands = [
 		// ── Подключение ─────────────────────────────────────────────────────
 		vscode.commands.registerCommand('pgsql-tools.addConnection', () => {
@@ -82,12 +103,16 @@ export async function activate(context: vscode.ExtensionContext) {
 
 		// ── Детали таблицы / функции / процедуры ─────────────────────────────
 		vscode.commands.registerCommand('pgsql-tools.viewTableDetails', async (node: any) => {
+			console.log('[viewTableDetails] Called with node:', node);
 			const schema = node.parentSchema || 'public';
 			const objectName = node.parentTable || node.label;
-			// Determine object type: function, procedure, or default to table
+			console.log('[viewTableDetails] Schema:', schema, 'Object:', objectName);
+			// Determine object type: function, procedure, view, or default to table
 			const objectType = node.contextValue === 'function' ? 'function' 
 				: node.contextValue === 'procedure' ? 'procedure' 
+				: node.contextValue === 'view' ? 'view'
 				: 'table';
+			console.log('[viewTableDetails] ObjectType:', objectType);
 			await ObjectDetailsPanel.show(
 				context, schema, objectName, objectType,
 				queryExecutor, connectionManager, resultsViewProvider

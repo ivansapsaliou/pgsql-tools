@@ -245,6 +245,30 @@ export class QueryExecutor {
 		return res.rows[0].proc_def || `-- Procedure definition not available`;
 	}
 
+	/**
+	 * Get DDL for a view using pg_get_viewdef
+	 */
+	async getViewDDL(schema: string, viewName: string): Promise<string> {
+		const e = (s: string) => s.replace(/'/g, "''");
+
+		// Get view definition
+		const res = await this.executeQuery(`
+			SELECT pg_get_viewdef(v.oid, true) AS view_def
+			FROM pg_class v
+			JOIN pg_namespace n ON n.oid = v.relnamespace
+			WHERE n.nspname = '${e(schema)}'
+			  AND v.relname = '${e(viewName)}'
+			  AND v.relkind = 'v'
+			LIMIT 1
+		`);
+
+		if (res.rows.length === 0) {
+			return `-- View ${schema}.${viewName} not found`;
+		}
+
+		return res.rows[0].view_def || `-- View definition not available`;
+	}
+
 	async getTableData(schema: string, tableName: string, limit: number = 100, offset: number = 0): Promise<QueryResult> {
 		return this.executeQuery(`SELECT * FROM "${schema}"."${tableName}" LIMIT ${limit} OFFSET ${offset}`);
 	}

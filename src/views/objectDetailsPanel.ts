@@ -179,6 +179,18 @@ export class ObjectDetailsPanel {
 					schema, objectName, ddl, null,
 					indexes, foreignKeys, constraints, columnDetails
 				);
+			} else if (objectType === 'view') {
+				// Для представлений загружаем DDL и информацию о колонках
+				const [ddl, columnDetails] =
+					await Promise.all([
+						queryExecutor.getViewDDL(schema, objectName),
+						this.fetchColumnDetails(queryExecutor, schema, objectName),
+					]);
+
+				this.currentPanel.webview.html = this.getHtml(
+					schema, objectName, ddl, null,
+					[], [], [], columnDetails
+				);
 			} else if (objectType === 'function') {
 				const ddl = await queryExecutor.getFunctionDDL(schema, objectName);
 				this.currentPanel.webview.html = this.getFunctionHtml(schema, objectName, ddl);

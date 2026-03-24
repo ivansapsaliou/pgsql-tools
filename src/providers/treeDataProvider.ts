@@ -36,17 +36,26 @@ export class TreeNode {
 		public parentTable?: string,
 		public connectionName?: string,
 		public command?: vscode.Command,
-		public meta?: Record<string, any>
+		public meta?: Record<string, any>,
+		public clickCount: number = 0,
 	) {}
 }
 
 export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeNode> {
 	private _onDidChangeTreeData = new vscode.EventEmitter<TreeNode | undefined | null | void>();
 	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+	// Событие двойного клика - будет использоваться в extension.ts
+	private _onDidDoubleClick = new vscode.EventEmitter<TreeNode>();
+	readonly onDidDoubleClick = this._onDidDoubleClick.event;
 	private queryExecutor: QueryExecutor;
 
 	constructor(private connectionManager: ConnectionManager) {
 		this.queryExecutor = new QueryExecutor(connectionManager);
+	}
+
+	// Метод для вызова события двойного клика
+	handleDoubleClick(node: TreeNode): void {
+		this._onDidDoubleClick.fire(node);
 	}
 
 	refresh(): void {
@@ -98,13 +107,9 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 		}
 
 		// Double-click to open table/view/function/procedure details
-		if (element.contextValue === 'table' || element.contextValue === 'view' || element.contextValue === 'function' || element.contextValue === 'procedure') {
-			item.command = element.command ?? {
-				command: 'pgsql-tools.viewTableDetails',
-				title: 'View Details',
-				arguments: [element],
-			};
-		}
+		// Команда НЕ устанавливается в item.command - она вызывается вручную в extension.ts
+		// через обработчик onDidChangeSelection при обнаружении двойного клика.
+		// Это позволяет открывать детали только по двойному клику, а не по одинарному.
 
 		return item;
 	}
@@ -201,7 +206,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 					return res.rows.map((r) => {
 						const n = new TreeNode(
 							r.table_name,
-							vscode.TreeItemCollapsibleState.Collapsed,
+							vscode.TreeItemCollapsibleState.None,
 							'table',
 							schema,
 							r.table_name,
@@ -224,12 +229,17 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 					return res.rows.map((r) => {
 						const n = new TreeNode(
 							r.table_name,
-							vscode.TreeItemCollapsibleState.Collapsed,
+							vscode.TreeItemCollapsibleState.None,
 							'view',
 							schema,
 							r.table_name,
 							connName
 						);
+						n.command = {
+							command: 'pgsql-tools.viewTableDetails',
+							title: 'View View Details',
+							arguments: [n],
+						};
 						return n;
 					});
 				}
@@ -250,7 +260,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 							vscode.TreeItemCollapsibleState.None,
 							'function',
 							schema,
-							undefined,
+							r.routine_name,
 							connName,
 							undefined,
 							{ returnType: r.return_type, specificName: r.specific_name }
@@ -280,7 +290,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 							vscode.TreeItemCollapsibleState.None,
 							'procedure',
 							schema,
-							undefined,
+							r.routine_name,
 							connName,
 							undefined,
 							{ returnType: r.return_type, specificName: r.specific_name }

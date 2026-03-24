@@ -200,6 +200,11 @@
 					"command": "pgsql-tools.showERDFromTable",
 					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == view)",
 					"group": "context@4"
+				},
+				{
+					"command": "pgsql-tools.viewTableDetails",
+					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == view || viewItem == function || viewItem == procedure)",
+					"group": "context@5"
 				}
 			],
 			"commandPalette": [
