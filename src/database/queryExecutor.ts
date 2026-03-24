@@ -211,6 +211,40 @@ export class QueryExecutor {
 		return parseInt(result.rows[0]?.count ?? '0', 10);
 	}
 
+	/**
+	 * Fast row count using table estimate from pg_class.
+	 * Falls back to COUNT(*) if estimate is unavailable or table is empty.
+	 */
+	async getTableRowCountFast(schema: string, tableName: string): Promise<number> {
+		const e = (s: string) => s.replace(/'/g, "''");
+		try {
+			// Сначала пробуем получить оценку из pg_class
+			const estimateRes = await this.executeQuery(`
+				SELECT COALESCE(
+					NULLIF(pg_class.reltuples, -1)::bigint,
+					NULL
+				) AS estimate
+				FROM pg_catalog.pg_class
+				JOIN pg_catalog.pg_namespace ON pg_namespace.oid = pg_class.relnamespace
+				WHERE pg_namespace.nspname = '${e(schema)}'
+				  AND pg_class.relname = '${e(tableName)}'
+			`);
+
+			const estimate = estimateRes.rows[0]?.estimate;
+			if (estimate !== null && estimate > 0) {
+				return Number(estimate);
+			}
+		} catch {
+			// Игнорируем ошибки, используем COUNT как резерв
+		}
+
+		// Резерв: COUNT(*)
+		const result = await this.executeQuery(
+			`SELECT COUNT(*) AS count FROM "${schema}"."${tableName}"`
+		);
+		return parseInt(result.rows[0]?.count ?? '0', 10);
+	}
+
 	async getIndexes(schema: string, tableName: string): Promise<IndexInfo[]> {
 		const result = await this.executeQuery(`
 			SELECT
@@ -243,46 +277,58 @@ export class QueryExecutor {
 	}
 
 	async getForeignKeys(schema: string, tableName: string): Promise<ForeignKeyInfo[]> {
-		const outgoing = await this.executeQuery(`
+		const e = (s: string) => s.replace(/'/g, "''");
+
+		// Outgoing FK: this table -> other table
+		const outgoingRes = await this.executeQuery(`
 			SELECT
-				tc.constraint_name,
-				array_agg(kcu.column_name ORDER BY kcu.ordinal_position) AS columns,
-				ccu.table_schema  AS foreign_schema,
-				ccu.table_name    AS foreign_table,
-				array_agg(ccu.column_name ORDER BY kcu.ordinal_position) AS foreign_columns
-			FROM information_schema.table_constraints        tc
-			JOIN information_schema.key_column_usage         kcu
-				 ON tc.constraint_name = kcu.constraint_name
-				AND tc.table_schema    = kcu.table_schema
-			JOIN information_schema.constraint_column_usage  ccu
-				 ON ccu.constraint_name = tc.constraint_name
-			WHERE tc.constraint_type = 'FOREIGN KEY'
-			  AND tc.table_schema    = '${schema}'
-			  AND tc.table_name      = '${tableName}'
-			GROUP BY tc.constraint_name, ccu.table_schema, ccu.table_name
+				con.conname                                              AS constraint_name,
+				array_agg(a.attname ORDER BY x.n)                        AS columns,
+				nf.nspname                                               AS foreign_schema,
+				cf.relname                                               AS foreign_table,
+				array_agg(af.attname ORDER BY x.n)                      AS foreign_columns
+			FROM pg_catalog.pg_constraint     con
+			JOIN pg_catalog.pg_class          ct  ON ct.oid = con.conrelid
+			JOIN pg_catalog.pg_namespace     ns  ON ns.oid = ct.relnamespace
+			JOIN pg_catalog.pg_class          cf  ON cf.oid = con.confrelid
+			JOIN pg_catalog.pg_namespace     nf  ON nf.oid = cf.relnamespace
+			JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS x(attnum, n) ON TRUE
+			JOIN pg_catalog.pg_attribute     a   ON a.attrelid = ct.oid AND a.attnum = x.attnum
+			JOIN LATERAL unnest(con.confkey) WITH ORDINALITY AS y(attnum, n) ON y.n = x.n
+			JOIN pg_catalog.pg_attribute     af  ON af.attrelid = cf.oid AND af.attnum = y.attnum
+			WHERE con.contype = 'f'
+			  AND ns.nspname  = '${e(schema)}'
+			  AND ct.relname = '${e(tableName)}'
+			GROUP BY con.oid, con.conname, nf.nspname, cf.relname
+			ORDER BY con.conname
 		`);
 
-		const incoming = await this.executeQuery(`
+		// Incoming FK: other table -> this table
+		const incomingRes = await this.executeQuery(`
 			SELECT
-				tc.constraint_name,
-				tc.table_schema   AS foreign_schema,
-				tc.table_name     AS foreign_table,
-				array_agg(kcu.column_name ORDER BY kcu.ordinal_position) AS foreign_columns,
-				array_agg(ccu.column_name ORDER BY kcu.ordinal_position) AS columns
-			FROM information_schema.table_constraints        tc
-			JOIN information_schema.key_column_usage         kcu
-				 ON tc.constraint_name = kcu.constraint_name
-				AND tc.table_schema    = kcu.table_schema
-			JOIN information_schema.constraint_column_usage  ccu
-				 ON ccu.constraint_name = tc.constraint_name
-			WHERE tc.constraint_type = 'FOREIGN KEY'
-			  AND ccu.table_schema   = '${schema}'
-			  AND ccu.table_name     = '${tableName}'
-			GROUP BY tc.constraint_name, tc.table_schema, tc.table_name
+				con.conname                                              AS constraint_name,
+				array_agg(af.attname ORDER BY y.n)                      AS columns,
+				ns.nspname                                               AS foreign_schema,
+				ct.relname                                               AS foreign_table,
+				array_agg(a.attname ORDER BY y.n)                       AS foreign_columns
+			FROM pg_catalog.pg_constraint     con
+			JOIN pg_catalog.pg_class          cf  ON cf.oid = con.confrelid
+			JOIN pg_catalog.pg_namespace     nf  ON nf.oid = cf.relnamespace
+			JOIN pg_catalog.pg_class          ct  ON ct.oid = con.conrelid
+			JOIN pg_catalog.pg_namespace     ns  ON ns.oid = ct.relnamespace
+			JOIN LATERAL unnest(con.confkey) WITH ORDINALITY AS y(attnum, n) ON TRUE
+			JOIN pg_catalog.pg_attribute     af  ON af.attrelid = cf.oid AND af.attnum = y.attnum
+			JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS x(attnum, n) ON x.n = y.n
+			JOIN pg_catalog.pg_attribute     a   ON a.attrelid = ct.oid AND a.attnum = x.attnum
+			WHERE con.contype = 'f'
+			  AND nf.nspname  = '${e(schema)}'
+			  AND cf.relname = '${e(tableName)}'
+			GROUP BY con.oid, con.conname, ns.nspname, ct.relname
+			ORDER BY con.conname
 		`);
 
 		return [
-			...outgoing.rows.map(row => ({
+			...outgoingRes.rows.map(row => ({
 				constraintName: row.constraint_name,
 				columns: this.parseArray(row.columns),
 				foreignSchema: row.foreign_schema,
@@ -290,7 +336,7 @@ export class QueryExecutor {
 				foreignColumns: this.parseArray(row.foreign_columns),
 				direction: 'outgoing' as const
 			})),
-			...incoming.rows.map(row => ({
+			...incomingRes.rows.map(row => ({
 				constraintName: row.constraint_name,
 				columns: this.parseArray(row.columns),
 				foreignSchema: row.foreign_schema,
@@ -302,33 +348,43 @@ export class QueryExecutor {
 	}
 
 	async getConstraints(schema: string, tableName: string): Promise<ConstraintInfo[]> {
+		const e = (s: string) => s.replace(/'/g, "''");
+
 		const result = await this.executeQuery(`
 			SELECT
-				tc.constraint_name,
-				tc.constraint_type,
-				array_agg(kcu.column_name ORDER BY kcu.ordinal_position)
-					FILTER (WHERE kcu.column_name IS NOT NULL)              AS columns,
-				cc.check_clause
-			FROM information_schema.table_constraints   tc
-			LEFT JOIN information_schema.key_column_usage kcu
-				 ON tc.constraint_name = kcu.constraint_name
-				AND tc.table_schema    = kcu.table_schema
-				AND tc.table_name      = kcu.table_name
-			LEFT JOIN information_schema.check_constraints cc
-				 ON cc.constraint_name  = tc.constraint_name
-				AND cc.constraint_schema = tc.table_schema
-			WHERE tc.table_schema = '${schema}'
-			  AND tc.table_name   = '${tableName}'
-			  AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE', 'CHECK')
-			GROUP BY tc.constraint_name, tc.constraint_type, cc.check_clause
-			ORDER BY tc.constraint_type, tc.constraint_name
+				con.conname                                              AS constraint_name,
+				CASE con.contype
+					WHEN 'p' THEN 'PRIMARY KEY'
+					WHEN 'u' THEN 'UNIQUE'
+					WHEN 'c' THEN 'CHECK'
+					WHEN 'f' THEN 'FOREIGN KEY'
+				END                                                      AS constraint_type,
+				array_agg(a.attname ORDER BY x.n) FILTER (WHERE a.attname IS NOT NULL) AS columns,
+				pg_catalog.pg_get_constraintdef(con.oid, true)          AS definition
+			FROM pg_catalog.pg_constraint con
+			JOIN pg_catalog.pg_class       c   ON c.oid = con.conrelid
+			JOIN pg_catalog.pg_namespace   n   ON n.oid = c.relnamespace
+			LEFT JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS x(attnum, n) ON TRUE
+			LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum = x.attnum AND NOT a.attisdropped
+			WHERE n.nspname = '${e(schema)}'
+			  AND c.relname = '${e(tableName)}'
+			  AND con.contype IN ('p', 'u', 'c')
+			GROUP BY con.oid, con.conname, con.contype
+			ORDER BY
+				CASE con.contype
+					WHEN 'p' THEN 1
+					WHEN 'u' THEN 2
+					WHEN 'c' THEN 3
+					ELSE 4
+				END,
+				con.conname
 		`);
 
 		return result.rows.map(row => ({
 			name: row.constraint_name,
 			type: row.constraint_type as ConstraintInfo['type'],
 			columns: this.parseArray(row.columns),
-			definition: row.check_clause
+			definition: row.definition
 		}));
 	}
 

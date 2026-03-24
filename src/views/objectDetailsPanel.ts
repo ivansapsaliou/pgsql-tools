@@ -77,30 +77,141 @@ export class ObjectDetailsPanel {
 					context, message.schema, message.table, 'table',
 					queryExecutor, connectionManager, resultsViewProvider
 				);
-			} else if (message.command === 'loadPage') {
+			} else if (message.command === 'loadPage' || message.command === 'loadSortedPage') {
 				try {
-					const pageSize = 100;
+					const pageSize = message.limit || 1000;
 					const offset = (message.page - 1) * pageSize;
-					const result = await queryExecutor.getTableData(schema, objectName, pageSize, offset);
+				const orderBy = message.orderBy ? ` ORDER BY "${message.orderBy}" ${message.orderDir || 'ASC'}` : '';
+					const result = await queryExecutor.executeQuery(
+						`SELECT * FROM "${schema}"."${objectName}"${orderBy} LIMIT ${pageSize} OFFSET ${offset}`
+					);
 					this.currentPanel?.webview.postMessage({
 						command: 'pageData',
 						rows: result.rows,
 						fields: result.fields?.map((f: any) => f.name) || [],
 						page: message.page,
+						orderBy: message.orderBy || null,
+						orderDir: message.orderDir || null,
 					});
 				} catch (err) {
 					vscode.window.showErrorMessage(`Failed to load page: ${err}`);
+				}
+			} else if (message.command === 'createColumn') {
+				try {
+					const colName = message.columnName;
+					const colType = message.columnType;
+					const notNull = message.notNull;
+					const defaultValue = message.defaultValue || null;
+					const comment = message.comment || null;
+
+					let sql = `ALTER TABLE "${schema}"."${objectName}" ADD COLUMN "${colName}" ${colType}`;
+					if (notNull) {
+						sql += ' NOT NULL';
+					}
+					if (defaultValue) {
+						sql += ` DEFAULT ${defaultValue}`;
+					}
+					await queryExecutor.executeQuery(sql);
+
+					if (comment) {
+						await queryExecutor.executeQuery(
+							`COMMENT ON COLUMN "${schema}"."${objectName}"."${colName}" IS '${comment.replace(/'/g, "''")}'`
+						);
+					}
+
+					vscode.window.showInformationMessage(`Column "${colName}" created successfully`);
+					// Refresh the panel
+					await ObjectDetailsPanel.show(
+						context, schema, objectName, 'table',
+						queryExecutor, connectionManager, resultsViewProvider
+					);
+				} catch (err) {
+					vscode.window.showErrorMessage(`Failed to create column: ${err}`);
+				}
+			} else if (message.command === 'deleteColumn') {
+				try {
+					const colName = message.columnName;
+					const sql = `ALTER TABLE "${schema}"."${objectName}" DROP COLUMN "${colName}"`;
+					await queryExecutor.executeQuery(sql);
+
+					vscode.window.showInformationMessage(`Column "${colName}" deleted successfully`);
+					// Refresh the panel
+					await ObjectDetailsPanel.show(
+						context, schema, objectName, 'table',
+						queryExecutor, connectionManager, resultsViewProvider
+					);
+				} catch (err) {
+					vscode.window.showErrorMessage(`Failed to delete column: ${err}`);
+				}
+			} else if (message.command === 'editColumn') {
+				try {
+					const oldColName = message.oldColumnName;
+					const newColName = message.newColumnName;
+					const newColType = message.newColumnType;
+					const notNull = message.notNull;
+					const defaultValue = message.defaultValue || null;
+					const comment = message.comment || null;
+
+					// Rename column if name changed
+					if (oldColName !== newColName) {
+						await queryExecutor.executeQuery(
+							`ALTER TABLE "${schema}"."${objectName}" RENAME COLUMN "${oldColName}" TO "${newColName}"`
+						);
+					}
+
+					// Alter column type and constraints
+					let sql = `ALTER TABLE "${schema}"."${objectName}" ALTER COLUMN "${newColName}" TYPE ${newColType}`;
+					await queryExecutor.executeQuery(sql);
+
+					if (notNull) {
+						await queryExecutor.executeQuery(
+							`ALTER TABLE "${schema}"."${objectName}" ALTER COLUMN "${newColName}" SET NOT NULL`
+						);
+					} else {
+						await queryExecutor.executeQuery(
+							`ALTER TABLE "${schema}"."${objectName}" ALTER COLUMN "${newColName}" DROP NOT NULL`
+						);
+					}
+
+					if (defaultValue !== null && defaultValue !== '') {
+						await queryExecutor.executeQuery(
+							`ALTER TABLE "${schema}"."${objectName}" ALTER COLUMN "${newColName}" SET DEFAULT ${defaultValue}`
+						);
+					} else {
+						await queryExecutor.executeQuery(
+							`ALTER TABLE "${schema}"."${objectName}" ALTER COLUMN "${newColName}" DROP DEFAULT`
+						);
+					}
+
+					if (comment) {
+						await queryExecutor.executeQuery(
+							`COMMENT ON COLUMN "${schema}"."${objectName}"."${newColName}" IS '${comment.replace(/'/g, "''")}'`
+						);
+					} else {
+						await queryExecutor.executeQuery(
+							`COMMENT ON COLUMN "${schema}"."${objectName}"."${newColName}" IS NULL`
+						);
+					}
+
+					vscode.window.showInformationMessage(`Column "${newColName}" updated successfully`);
+					// Refresh the panel
+					await ObjectDetailsPanel.show(
+						context, schema, objectName, 'table',
+						queryExecutor, connectionManager, resultsViewProvider
+					);
+				} catch (err) {
+					vscode.window.showErrorMessage(`Failed to edit column: ${err}`);
 				}
 			}
 		});
 
 		try {
 			if (objectType === 'table') {
-				const [ddl, data, totalCount, indexes, foreignKeys, constraints, columnDetails] =
+				// Параллельная загрузка: DDL, индексы, FK, ограничения, колонки (без данных)
+				// Данные загружаются лениво при переходе на вкладку Data
+				const [ddl, indexes, foreignKeys, constraints, columnDetails] =
 					await Promise.all([
 						queryExecutor.getTableDDL(schema, objectName),
-						queryExecutor.getTableData(schema, objectName, 100, 0),
-						queryExecutor.getTableRowCount(schema, objectName),
 						queryExecutor.getIndexes(schema, objectName),
 						queryExecutor.getForeignKeys(schema, objectName),
 						queryExecutor.getConstraints(schema, objectName),
@@ -108,7 +219,7 @@ export class ObjectDetailsPanel {
 					]);
 
 				this.currentPanel.webview.html = this.getHtml(
-					schema, objectName, ddl, data, totalCount,
+					schema, objectName, ddl, null,
 					indexes, foreignKeys, constraints, columnDetails
 				);
 			}
@@ -190,22 +301,82 @@ export class ObjectDetailsPanel {
 		return res.rows as ColumnDetail[];
 	}
 
+	// ── Форматирование типов данных ──────────────────────────────────────────
+
+	private static formatColumnType(colType: string): { display: string; class: string } {
+		// Приводим к верхнему регистру
+		let type = colType.toUpperCase();
+
+		// Заменяем "character varying" на "VARCHAR"
+		type = type.replace(/CHARACTER VARYING/g, 'VARCHAR');
+
+		// Заменяем "timestamp without time zone" на "TIMESTAMP"
+		type = type.replace(/TIMESTAMP WITHOUT TIME ZONE/g, 'TIMESTAMP');
+
+		// Заменяем "timestamp with time zone" на "TIMESTAMPTZ"
+		type = type.replace(/TIMESTAMP WITH TIME ZONE/g, 'TIMESTAMPTZ');
+
+		// Заменяем "time without time zone" на "TIME"
+		type = type.replace(/TIME WITHOUT TIME ZONE/g, 'TIME');
+
+		// Заменяем "time with time zone" на "TIMETZ"
+		type = type.replace(/TIME WITH TIME ZONE/g, 'TIMETZ');
+
+		// Заменяем "integer" на "INT"
+		type = type.replace(/INTEGER/g, 'INT');
+
+		// Заменяем "boolean" на "BOOL"
+		type = type.replace(/BOOLEAN/g, 'BOOL');
+
+		// Определяем категорию для раскраски
+		let cssClass = 'type-other';
+
+		// Числовые типы
+		if (/^(INT|SMALLINT|BIGINT|DECIMAL|NUMERIC|REAL|DOUBLE PRECISION|FLOAT|FLOAT4|FLOAT8|INT8|INT4|INT2|SERIAL|BIGSERIAL|MONEY)/.test(type)) {
+			cssClass = 'type-number';
+		}
+		// Строковые типы
+		else if (/^(VARCHAR|CHAR|TEXT|CHAR\(|\(BPCHAR|NCHAR|NVARCHAR|CLOB)/.test(type)) {
+			cssClass = 'type-string';
+		}
+		// Дата/время
+		else if (/^(DATE|TIME|TIMESTAMP|TIMESTAMPTZ|TIMETZ)/.test(type)) {
+			cssClass = 'type-datetime';
+		}
+		// UUID
+		else if (/^UUID/.test(type)) {
+			cssClass = 'type-uuid';
+		}
+		// JSON/JSONB
+		else if (/^JSON/.test(type)) {
+			cssClass = 'type-json';
+		}
+		// Бинарные
+		else if (/^(BYTEA|BLOB|BINARY|VARBINARY)/.test(type)) {
+			cssClass = 'type-binary';
+		}
+		// Булевы
+		else if (/^BOOL/.test(type)) {
+			cssClass = 'type-boolean';
+		}
+
+		return { display: type, class: cssClass };
+	}
+
 	// ── HTML ──────────────────────────────────────────────────────────────────
 
 	private static getHtml(
 		schema: string,
 		tableName: string,
 		ddl: string,
-		data: QueryResult,
-		totalCount: number,
+		data: QueryResult | null,
 		indexes: IndexInfo[],
 		foreignKeys: ForeignKeyInfo[],
 		constraints: ConstraintInfo[],
 		columnDetails: ColumnDetail[]
 	): string {
-		const fieldNames = data.fields?.map((f: any) => f.name) || [];
-		const pageSize = 100;
-		const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+		// Use columnDetails for field names (works even when data is null)
+		const fieldNames = columnDetails.map(c => c.col);
 
 		// ── Вкладка Columns ──────────────────────────────────────────────────
 		const columnsTabHtml = columnDetails.map((col) => {
@@ -221,13 +392,19 @@ export class ObjectDetailsPanel {
 				   </a>`
 				: '—';
 
-			return `<tr>
+			// Форматируем тип данных
+			const formattedType = this.formatColumnType(col.col_type);
+
+			return `<tr data-col-name="${esc(col.col)}">
 				<td class="monospace col-name-cell">${esc(col.col)}</td>
-				<td class="monospace">${esc(col.col_type)}</td>
+				<td class="monospace"><span class="type-badge ${formattedType.class}">${formattedType.display}</span></td>
 				<td>${badges.join(' ')}</td>
 				<td class="monospace small">${col.col_default ? esc(col.col_default) : '<span style="opacity:0.4">—</span>'}</td>
 				<td class="monospace small">${fkRef}</td>
 				<td class="comment-cell">${col.col_comment ? esc(col.col_comment) : '<span style="opacity:0.35">—</span>'}</td>
+				<td class="actions-cell">
+					<button class="btn-delete-col" data-col="${esc(col.col)}" title="Delete column">✕</button>
+				</td>
 			</tr>`;
 		}).join('');
 
@@ -271,16 +448,21 @@ export class ObjectDetailsPanel {
 				</tr>`).join('')
 			: '<tr><td colspan="4" class="empty-cell">No constraints</td></tr>';
 
-		// ── Вкладка Data ──────────────────────────────────────────────────────
-		const dataRowsHtml = data.rows.map((row: any) => `
-			<tr>${fieldNames.map((f) => {
-				const v = row[f];
-				return v === null
-					? '<td><span class="null-val">NULL</span></td>'
-					: `<td title="${esc(String(v))}">${esc(String(v))}</td>`;
-			}).join('')}</tr>`).join('');
+		// ── Вкладка Data (ленивая загрузка) ─────────────────────────────────
+		// Данные загружаются при переходе на вкладку Data
+		const hasData = data !== null;
+		const dataRowsHtml = hasData
+			? data!.rows.map((row: any) => `
+				<tr>${fieldNames.map((f) => {
+					const v = row[f];
+					return v === null
+						? '<td><span class="null-val">NULL</span></td>'
+						: `<td title="${esc(String(v))}">${esc(String(v))}</td>`;
+				}).join('')}</tr>`).join('')
+			: '';
 
-		const headerHtml = fieldNames.map((f) => `<th>${esc(f)}</th>`).join('');
+		// Headers for Data tab - make them sortable (use index for sorting)
+		const headerHtml = fieldNames.map((f, i) => `<th class="sortable" data-col="${i}">${esc(f)} <span class="sort-icon"></span></th>`).join('');
 
 		return `<!DOCTYPE html>
 <html>
@@ -372,6 +554,8 @@ export class ObjectDetailsPanel {
 	.search-input:focus { border-color: var(--vscode-focusBorder); }
 	.search-input::placeholder { color: var(--vscode-input-placeholderForeground); }
 	.row-count-info { font-size: 11px; opacity: 0.5; margin-left: auto; }
+	.limit-wrap { display: flex; align-items: center; margin-left: 8px; font-size: 11px; }
+	.limit-wrap input { text-align: right; }
 
 	/* ── table shared ── */
 	.table-scroll { flex: 1; overflow: auto; }
@@ -385,6 +569,10 @@ export class ObjectDetailsPanel {
 		border-right: 1px solid var(--vscode-panel-border);
 		white-space: nowrap;
 	}
+	th.sortable { cursor: pointer; user-select: none; }
+	th.sortable:hover { background: var(--vscode-list-hoverBackground); }
+	th.sorted-asc .sort-icon::after { content: ' ▲'; font-size: 8px; }
+	th.sorted-desc .sort-icon::after { content: ' ▼'; font-size: 8px; }
 	td {
 		padding: 4px 10px; height: 26px;
 		border-bottom: 1px solid var(--vscode-list-inactiveSelectionBackground, rgba(128,128,128,0.08));
@@ -445,6 +633,111 @@ export class ObjectDetailsPanel {
 	.page-btn:disabled { opacity: 0.3; cursor: default; }
 	.page-btn.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: transparent; }
 	.page-info { opacity: 0.55; margin-left: auto; }
+
+	/* ── Add Column button (icon only) ── */
+	.btn-add-col {
+		background: none; border: none; color: var(--vscode-button-foreground);
+		cursor: pointer; padding: 2px 8px; font-size: 14px; font-weight: 600;
+		border-radius: 3px;
+	}
+	.btn-add-col:hover { background: var(--vscode-button-hoverBackground); }
+
+	/* ── Column toolbar actions (disabled until row selected) ── */
+	.btn-col-action {
+		background: none; border: none; color: var(--vscode-disabledForeground, #808080);
+		cursor: not-allowed; padding: 2px 8px; font-size: 14px; opacity: 0.5;
+		border-radius: 3px;
+	}
+	.btn-col-action.active {
+		color: var(--vscode-button-foreground); cursor: pointer; opacity: 1;
+	}
+	.btn-col-action.active:hover { background: var(--vscode-list-hoverBackground); }
+	.btn-col-action--del.active { color: var(--vscode-errorForeground, #f14c4c); }
+
+	/* ── Delete column button (per row) ── */
+	.btn-delete-col {
+		background: none; border: none; color: var(--vscode-errorForeground, #f14c4c);
+		cursor: pointer; padding: 2px 6px; font-size: 12px; opacity: 0.5;
+		border-radius: 3px;
+	}
+	.btn-delete-col:hover { opacity: 1; background: rgba(241, 76, 76, 0.15); }
+	.actions-cell { text-align: center; width: 40px; }
+
+	/* ── Selected row in columns table ── */
+	#colBody tr.selected td {
+		background: var(--vscode-list-activeSelectionBackground, rgba(0, 90, 156, 0.3));
+	}
+
+	/* ── Type badges with colors ── */
+	.type-badge {
+		display: inline-block; padding: 1px 5px; border-radius: 3px;
+		font-size: 10px; font-weight: 600; font-family: var(--vscode-editor-font-family, monospace);
+	}
+	.type-string   { background: rgba(86, 156, 214, 0.15); color: #569cd6; }
+	.type-number   { background: rgba(181, 206, 168, 0.15); color: #b5cea8; }
+	.type-datetime { background: rgba(206, 145, 120, 0.15); color: #ce9178; }
+	.type-boolean  { background: rgba(220, 220, 170, 0.15); color: #dcdcaa; }
+	.type-uuid     { background: rgba(197, 134, 192, 0.15); color: #c586c0; }
+	.type-json     { background: rgba(78, 201, 176, 0.15); color: #4ec9b0; }
+	.type-binary   { background: rgba(156, 220, 254, 0.15); color: #9cdcfe; }
+	.type-other    { background: rgba(128, 128, 128, 0.15); color: #808080; }
+
+	/* ── Modal ── */
+	.modal-overlay {
+		position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+		background: rgba(0, 0, 0, 0.5); display: flex; align-items: center; justify-content: center;
+		z-index: 1000;
+	}
+	.modal-content {
+		background: var(--vscode-editor-background);
+		border: 1px solid var(--vscode-panel-border);
+		border-radius: 4px; min-width: 360px; max-width: 90%;
+		box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+	}
+	.modal-header {
+		display: flex; align-items: center; justify-content: space-between;
+		padding: 10px 14px; border-bottom: 1px solid var(--vscode-panel-border);
+	}
+	.modal-title { font-weight: 600; font-size: 13px; }
+	.modal-close {
+		background: none; border: none; color: var(--vscode-foreground);
+		cursor: pointer; font-size: 18px; padding: 0 4px; opacity: 0.6;
+	}
+	.modal-close:hover { opacity: 1; }
+	.modal-body { padding: 14px; }
+	.modal-footer {
+		display: flex; justify-content: flex-end; gap: 8px;
+		padding: 10px 14px; border-top: 1px solid var(--vscode-panel-border);
+	}
+	.form-group { margin-bottom: 12px; }
+	.form-group:last-child { margin-bottom: 0; }
+	.form-group label {
+		display: block; font-size: 11px; font-weight: 600; margin-bottom: 4px;
+		color: var(--vscode-foreground);
+	}
+	.form-input, .form-select {
+		width: 100%; padding: 5px 8px;
+		background: var(--vscode-input-background);
+		border: 1px solid var(--vscode-input-border, transparent);
+		color: var(--vscode-input-foreground);
+		font-family: var(--vscode-font-family); font-size: 12px;
+		border-radius: 2px;
+	}
+	.form-input:focus, .form-select:focus {
+		border-color: var(--vscode-focusBorder); outline: none;
+	}
+	.btn-cancel {
+		padding: 5px 12px; background: var(--vscode-button-secondaryBackground);
+		color: var(--vscode-button-secondaryForeground); border: 1px solid var(--vscode-button-secondaryBorder);
+		border-radius: 2px; cursor: pointer; font-size: 12px;
+	}
+	.btn-cancel:hover { background: var(--vscode-button-hoverBackground); }
+	.btn-confirm {
+		padding: 5px 12px; background: var(--vscode-button-background);
+		color: var(--vscode-button-foreground); border: none;
+		border-radius: 2px; cursor: pointer; font-size: 12px;
+	}
+	.btn-confirm:hover { background: var(--vscode-button-hoverBackground); }
 </style>
 </head>
 <body>
@@ -453,7 +746,6 @@ export class ObjectDetailsPanel {
 	<div class="header-left">
 		<span class="header-title">${esc(tableName)}</span>
 		<span class="header-meta">schema: ${esc(schema)}</span>
-		<span class="header-meta">${totalCount.toLocaleString()} rows</span>
 		<span class="header-meta">${columnDetails.length} columns</span>
 	</div>
 	<button class="btn-open" id="openInResultsBtn">↗ Open in Query Results</button>
@@ -473,6 +765,9 @@ export class ObjectDetailsPanel {
 	<!-- ── COLUMNS (первая вкладка) ── -->
 	<div class="tab-pane active" id="columns-pane">
 		<div class="data-toolbar">
+			<button class="btn-add-col" id="addColBtn" title="Add new column">+</button>
+			<button class="btn-col-action" id="editColBtn" title="Edit selected column" disabled>✎</button>
+			<button class="btn-col-action btn-col-action--del" id="deleteColBtn" title="Delete selected column" disabled>−</button>
 			<div class="search-wrap">
 				<span class="search-icon">⌕</span>
 				<input class="search-input" id="colSearch" placeholder="Filter columns…" autocomplete="off">
@@ -488,6 +783,7 @@ export class ObjectDetailsPanel {
 						<th>Default</th>
 						<th>References</th>
 						<th>Comment</th>
+						<th style="width:40px"></th>
 					</tr>
 				</thead>
 				<tbody id="colBody">${columnsTabHtml}</tbody>
@@ -500,16 +796,18 @@ export class ObjectDetailsPanel {
 		<div id="ddlEditor"></div>
 	</div>
 
-	<!-- ── DATA ── -->
+	<!-- ── DATA (ленивая загрузка) ── -->
 	<div class="tab-pane" id="data-pane">
 		<div class="data-toolbar">
 			<div class="search-wrap">
 				<span class="search-icon">⌕</span>
 				<input class="search-input" id="dataSearch" placeholder="Search visible rows…" autocomplete="off">
 			</div>
-			<span class="row-count-info" id="rowCountInfo">
-				${Math.min(100, totalCount)} of ${totalCount.toLocaleString()} rows
-			</span>
+			<label class="limit-wrap">
+				<span style="opacity:0.5;font-size:11px;">Limit:</span>
+				<input type="text" class="search-input" id="dataLimit" value="1000" style="width:60px;margin-left:4px;text-align:right;">
+			</label>
+			<span class="row-count-info" id="rowCountInfo">Click to load data</span>
 		</div>
 		<div class="table-scroll" id="dataTableScroll">
 			<table id="dataTable">
@@ -517,13 +815,12 @@ export class ObjectDetailsPanel {
 				<tbody id="dataBody">${dataRowsHtml}</tbody>
 			</table>
 		</div>
-		${totalPages > 1 ? `
-		<div class="pagination" id="dataPagination">
+		<div class="pagination" id="dataPagination" style="display: none;">
 			<button class="page-btn" id="prevPage" disabled>‹</button>
 			<span id="pageButtons"></span>
-			<button class="page-btn" id="nextPage" ${totalPages === 1 ? 'disabled' : ''}>›</button>
-			<span class="page-info" id="paginationInfo">Page 1 of ${totalPages}</span>
-		</div>` : ''}
+			<button class="page-btn" id="nextPage">›</button>
+			<span class="page-info" id="paginationInfo">Page 1</span>
+		</div>
 	</div>
 
 	<!-- ── INDEXES ── -->
@@ -588,7 +885,11 @@ require(['vs/editor/editor.main'], () => {
 		.observe(document.body, { attributes: true, attributeFilter: ['class'] });
 });
 
-// ── Tabs ──
+// ── Tabs (с ленивой загрузкой данных) ──
+let dataLoaded = false;
+const currentSchema = "${esc(schema)}";
+const currentTable = "${esc(tableName)}";
+
 document.querySelectorAll('.tab').forEach(tab => {
 	tab.addEventListener('click', () => {
 		const name = tab.dataset.tab;
@@ -597,6 +898,12 @@ document.querySelectorAll('.tab').forEach(tab => {
 		tab.classList.add('active');
 		document.getElementById(name + '-pane').classList.add('active');
 		if (name === 'ddl' && editor) setTimeout(() => editor.layout(), 50);
+		
+		// Ленивая загрузка данных при переходе на вкладку Data
+		if (name === 'data' && !dataLoaded) {
+			dataLoaded = true;
+			loadPage(1);
+		}
 	});
 });
 
@@ -613,12 +920,15 @@ document.querySelectorAll('.fk-link').forEach(link => {
 });
 
 // ── Column search ──
-document.getElementById('colSearch').addEventListener('input', e => {
-	const term = e.target.value.toLowerCase();
-	document.querySelectorAll('#colBody tr').forEach(row => {
-		row.style.display = term && !row.textContent.toLowerCase().includes(term) ? 'none' : '';
+const colSearch = document.getElementById('colSearch');
+if (colSearch) {
+	colSearch.addEventListener('input', e => {
+		const term = e.target.value.toLowerCase();
+		document.querySelectorAll('#colBody tr').forEach(row => {
+			row.style.display = term && !row.textContent.toLowerCase().includes(term) ? 'none' : '';
+		});
 	});
-});
+}
 
 // ── Data search ──
 const dataSearch = document.getElementById('dataSearch');
@@ -631,11 +941,14 @@ if (dataSearch) {
 	});
 }
 
-// ── Pagination ──
-const PAGE_SIZE = 100;
-const TOTAL_COUNT = ${totalCount};
-const TOTAL_PAGES = ${totalPages};
+// ── Pagination (динамические значения) ──
+let PAGE_SIZE = 1000;
+let TOTAL_COUNT = 0;
+let TOTAL_PAGES = 1;
 let currentPage = 1;
+let hasMoreData = false;
+let currentOrderBy = null;
+let currentOrderDir = 'ASC';
 
 function getPageRange(cur, total) {
 	if (total <= 7) return Array.from({length: total}, (_, i) => i + 1);
@@ -660,28 +973,65 @@ function renderPaginationButtons() {
 			container.appendChild(b);
 		}
 	});
-	document.getElementById('paginationInfo').textContent = 'Page ' + currentPage + ' of ' + TOTAL_PAGES;
-	document.getElementById('prevPage').disabled = currentPage === 1;
-	document.getElementById('nextPage').disabled = currentPage === TOTAL_PAGES;
+	const infoEl = document.getElementById('paginationInfo');
+	if (infoEl) infoEl.textContent = 'Page ' + currentPage + (TOTAL_COUNT > 0 ? ' of ' + TOTAL_PAGES : '');
+	const prevBtn = document.getElementById('prevPage');
+	const nextBtn = document.getElementById('nextPage');
+	if (prevBtn) prevBtn.disabled = currentPage === 1;
+	if (nextBtn) nextBtn.disabled = currentPage >= TOTAL_PAGES && !hasMoreData;
 }
+
+let storedFieldNames = []; // Store actual field names from query result
+let currentSortColumn = null; // Store column NAME for backend queries (different from currentOrderBy which is index)
 
 function loadPage(page) {
 	currentPage = page; renderPaginationButtons();
-	document.getElementById('rowCountInfo').textContent = 'Loading…';
-	vscode.postMessage({ command: 'loadPage', page });
+	const rowInfo = document.getElementById('rowCountInfo');
+	if (rowInfo) rowInfo.textContent = 'Loading…';
+	
+	// Update PAGE_SIZE from input
+	const limitInput = document.getElementById('dataLimit');
+	if (limitInput) {
+		PAGE_SIZE = parseInt(limitInput.value, 10) || 1000;
+	}
+	
+	// Use currentSortColumn for ORDER BY (stored separately from index)
+	if (currentSortColumn && storedFieldNames.includes(currentSortColumn)) {
+		vscode.postMessage({ command: 'loadSortedPage', page, limit: PAGE_SIZE, orderBy: currentSortColumn, orderDir: currentOrderDir });
+	} else {
+		vscode.postMessage({ command: 'loadPage', page, limit: PAGE_SIZE });
+	}
+}
+
+// ── Limit change handler ──
+const limitInput = document.getElementById('dataLimit');
+if (limitInput) {
+	limitInput.addEventListener('change', () => {
+		PAGE_SIZE = parseInt(limitInput.value, 10) || 1000;
+		loadPage(1);
+	});
 }
 
 const prevBtn = document.getElementById('prevPage');
 const nextBtn = document.getElementById('nextPage');
 if (prevBtn) prevBtn.onclick = () => { if (currentPage > 1) loadPage(currentPage - 1); };
-if (nextBtn) nextBtn.onclick = () => { if (currentPage < TOTAL_PAGES) loadPage(currentPage + 1); };
-if (TOTAL_PAGES > 1) renderPaginationButtons();
+if (nextBtn) nextBtn.onclick = () => { if (currentPage < TOTAL_PAGES || hasMoreData) loadPage(currentPage + 1); };
 
 window.addEventListener('message', e => {
 	const msg = e.data;
 	if (msg.command === 'pageData') {
 		const tbody = document.getElementById('dataBody');
 		const fields = msg.fields;
+		// Пустая таблица - показываем сообщение
+		if (msg.rows.length === 0) {
+			tbody.innerHTML = '<tr><td colspan="100%" class="empty-cell">No data</td></tr>';
+			const rowInfo = document.getElementById('rowCountInfo');
+			if (rowInfo) rowInfo.textContent = '0 rows';
+			// Скрываем пагинацию
+			const pag = document.getElementById('dataPagination');
+			if (pag) pag.style.display = 'none';
+			return;
+		}
 		tbody.innerHTML = msg.rows.map(row =>
 			'<tr>' + fields.map(f => {
 				const v = row[f];
@@ -691,15 +1041,398 @@ window.addEventListener('message', e => {
 			}).join('') + '</tr>'
 		).join('');
 		if (dataSearch) dataSearch.value = '';
-		const start = (msg.page - 1) * PAGE_SIZE + 1;
-		const end = Math.min(msg.page * PAGE_SIZE, TOTAL_COUNT);
-		document.getElementById('rowCountInfo').textContent = start + '–' + end + ' of ' + TOTAL_COUNT.toLocaleString() + ' rows';
+		
+		// Store actual field names from query result for sorting
+		if (fields && fields.length > 0 && storedFieldNames.length === 0) {
+			storedFieldNames = fields;
+		}
+		
+		// Проверяем есть ли ещё данные
+		hasMoreData = msg.rows.length >= PAGE_SIZE;
+		
+		if (hasMoreData) {
+			// Если есть ещё данные, увеличиваем общее количество страниц
+			TOTAL_PAGES = currentPage + 1;
+			TOTAL_COUNT = currentPage * PAGE_SIZE;
+		} else {
+			// Если данных меньше чем pageSize, показываем общее количество
+			TOTAL_PAGES = currentPage;
+			TOTAL_COUNT = (currentPage - 1) * PAGE_SIZE + msg.rows.length;
+		}
+		
+		const rowInfo = document.getElementById('rowCountInfo');
+		if (rowInfo) {
+			const start = (currentPage - 1) * PAGE_SIZE + 1;
+			const end = (currentPage - 1) * PAGE_SIZE + msg.rows.length;
+			rowInfo.textContent = start + '–' + end + (hasMoreData ? '+ rows' : ' rows');
+		}
+		
+		// Показываем/скрываем пагинацию
+		const pag = document.getElementById('dataPagination');
+		if (pag) {
+			pag.style.display = (TOTAL_PAGES > 1 || hasMoreData) ? 'flex' : 'none';
+			renderPaginationButtons();
+		}
+		
+		// Restore sort state from message
+		if (msg.orderBy) {
+			currentSortColumn = msg.orderBy;
+			currentOrderDir = msg.orderDir || 'ASC';
+			// Restore currentOrderBy (index) from currentSortColumn
+			currentOrderBy = storedFieldNames.indexOf(msg.orderBy);
+			document.querySelectorAll('#dataTable th.sortable').forEach(h => {
+				h.classList.remove('sorted-asc', 'sorted-desc');
+				if (h.dataset.col == currentOrderBy) {
+					h.classList.add(currentOrderDir === 'ASC' ? 'sorted-asc' : 'sorted-desc');
+				}
+			});
+		}
 	}
+});
+
+// ── Sort click handler (event delegation) ──
+document.addEventListener('click', (e) => {
+	const th = e.target.closest('#dataTable th.sortable');
+	if (!th) return;
+	const colIndex = parseInt(th.dataset.col, 10);
+	if (currentOrderBy === colIndex) {
+		currentOrderDir = currentOrderDir === 'ASC' ? 'DESC' : 'ASC';
+	} else {
+		currentOrderBy = colIndex;
+		currentOrderDir = 'ASC';
+	}
+	// Update currentSortColumn with the actual column name
+	if (colIndex >= 0 && colIndex < storedFieldNames.length) {
+		currentSortColumn = storedFieldNames[colIndex];
+	}
+	document.querySelectorAll('#dataTable th.sortable').forEach(h => h.classList.remove('sorted-asc', 'sorted-desc'));
+	th.classList.add(currentOrderDir === 'ASC' ? 'sorted-asc' : 'sorted-desc');
+	loadPage(1);
 });
 
 function escH(t) {
 	const d = document.createElement('div'); d.textContent = t; return d.innerHTML;
 }
+
+// ── Modal for adding columns ───────────────────────────────────────────────
+var modalHtml = '<div id="addColModal" class="modal-overlay" style="display:none;">' +
+	'<div class="modal-content">' +
+		'<div class="modal-header">' +
+			'<span class="modal-title">Add New Column</span>' +
+			'<button class="modal-close" id="closeModal">&times;</button>' +
+		'</div>' +
+		'<div class="modal-body">' +
+			'<div class="form-group">' +
+				'<label>Column Name</label>' +
+				'<input type="text" id="newColName" class="form-input" placeholder="e.g., user_name">' +
+			'</div>' +
+			'<div class="form-group">' +
+				'<label>Data Type</label>' +
+				'<select id="newColType" class="form-select">' +
+					'<option value="VARCHAR(255)">VARCHAR(255)</option>' +
+					'<option value="INTEGER">INTEGER</option>' +
+					'<option value="BIGINT">BIGINT</option>' +
+					'<option value="TEXT">TEXT</option>' +
+					'<option value="BOOLEAN">BOOLEAN</option>' +
+					'<option value="DATE">DATE</option>' +
+					'<option value="TIMESTAMP">TIMESTAMP</option>' +
+					'<option value="NUMERIC">NUMERIC</option>' +
+					'<option value="REAL">REAL</option>' +
+					'<option value="UUID">UUID</option>' +
+					'<option value="JSONB">JSONB</option>' +
+					'<option value="BYTEA">BYTEA</option>' +
+				'</select>' +
+			'</div>' +
+			'<div class="form-group">' +
+				'<label><input type="checkbox" id="newColNotNull"> NOT NULL</label>' +
+			'</div>' +
+			'<div class="form-group">' +
+				'<label>Default Value</label>' +
+				'<input type="text" id="newColDefault" class="form-input" placeholder="e.g., 0 or default">' +
+			'</div>' +
+			'<div class="form-group">' +
+				'<label>Comment</label>' +
+				'<input type="text" id="newColComment" class="form-input" placeholder="Optional comment">' +
+			'</div>' +
+		'</div>' +
+		'<div class="modal-footer">' +
+			'<button class="btn-cancel" id="cancelAddCol">Cancel</button>' +
+			'<button class="btn-confirm" id="confirmAddCol">Add Column</button>' +
+		'</div>' +
+	'</div>' +
+'</div>';
+document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+// Modal event handlers
+document.getElementById('addColBtn').addEventListener('click', function() {
+	document.getElementById('addColModal').style.display = 'flex';
+	document.getElementById('newColName').focus();
+});
+
+document.getElementById('closeModal').addEventListener('click', function() {
+	document.getElementById('addColModal').style.display = 'none';
+});
+
+document.getElementById('cancelAddCol').addEventListener('click', function() {
+	document.getElementById('addColModal').style.display = 'none';
+});
+
+document.getElementById('confirmAddCol').addEventListener('click', function() {
+	var colName = document.getElementById('newColName').value.trim();
+	var colType = document.getElementById('newColType').value;
+	var notNull = document.getElementById('newColNotNull').checked;
+	var defaultValue = document.getElementById('newColDefault').value.trim();
+	var comment = document.getElementById('newColComment').value.trim();
+
+	if (!colName) {
+		alert('Please enter a column name');
+		return;
+	}
+
+	// Validate column name (PostgreSQL identifiers)
+	if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(colName)) {
+		alert('Invalid column name. Use only letters, numbers, and underscores, starting with a letter or underscore.');
+		return;
+	}
+
+	vscode.postMessage({
+		command: 'createColumn',
+		columnName: colName,
+		columnType: colType,
+		notNull: notNull,
+		defaultValue: defaultValue || null,
+		comment: comment || null
+	});
+
+	document.getElementById('addColModal').style.display = 'none';
+	// Clear form
+	document.getElementById('newColName').value = '';
+	document.getElementById('newColDefault').value = '';
+	document.getElementById('newColComment').value = '';
+	document.getElementById('newColNotNull').checked = false;
+});
+
+// Close modal on outside click
+document.getElementById('addColModal').addEventListener('click', function(e) {
+	if (e.target.id === 'addColModal') {
+		document.getElementById('addColModal').style.display = 'none';
+	}
+});
+
+// ── Column row selection ─────────────────────────────────────────────────────
+let selectedColumn = null;
+const editColBtn = document.getElementById('editColBtn');
+const deleteColBtn = document.getElementById('deleteColBtn');
+
+// Column selection handler
+const colBody = document.getElementById('colBody');
+if (colBody) {
+	colBody.addEventListener('click', function(e) {
+		// Handle row selection
+		const row = e.target.closest('#colBody tr');
+		if (row) {
+			// Toggle selection on row click
+			const wasSelected = row.classList.contains('selected');
+			// Remove selection from all rows
+			document.querySelectorAll('#colBody tr').forEach(r => r.classList.remove('selected'));
+
+			if (!wasSelected) {
+				row.classList.add('selected');
+				selectedColumn = row.getAttribute('data-col-name');
+				if (editColBtn) { editColBtn.disabled = false; editColBtn.classList.add('active'); }
+				if (deleteColBtn) { deleteColBtn.disabled = false; deleteColBtn.classList.add('active'); }
+			} else {
+				selectedColumn = null;
+				if (editColBtn) { editColBtn.disabled = true; editColBtn.classList.remove('active'); }
+				if (deleteColBtn) { deleteColBtn.disabled = true; deleteColBtn.classList.remove('active'); }
+			}
+		}
+
+		// Handle delete button click in row
+		const btn = e.target.closest('.btn-delete-col');
+		if (btn) {
+			var colName = btn.getAttribute('data-col');
+			if (colName && confirm('Are you sure you want to delete column "' + colName + '"?\n\nThis will also delete all data in this column.')) {
+				vscode.postMessage({
+					command: 'deleteColumn',
+					columnName: colName
+				});
+			}
+		}
+	});
+}
+
+// Edit column button handler - only if element exists
+if (editColBtn) {
+	editColBtn.addEventListener('click', function() {
+		if (!selectedColumn) return;
+
+		// Get current column details from the selected row
+		const row = document.querySelector('#colBody tr[data-col-name="' + selectedColumn + '"]');
+		if (!row) return;
+
+		// Extract column info from the row
+		const cells = row.querySelectorAll('td');
+		const colName = selectedColumn;
+		const colTypeText = cells[1] ? cells[1].textContent.trim() : '';
+		const colDefault = cells[3] ? cells[3].textContent.trim() : '';
+		const colComment = cells[5] ? cells[5].textContent.trim() : '';
+
+		// Show edit modal
+		showEditColModal(colName, colTypeText, colDefault, colComment);
+	});
+}
+
+// ── Edit Column Modal ───────────────────────────────────────────────────────
+function showEditColModal(colName, colType, colDefault, colComment) {
+	let modal = document.getElementById('editColModal');
+	if (!modal) {
+		var editModalHtml = '<div id="editColModal" class="modal-overlay" style="display:none;">' +
+			'<div class="modal-content">' +
+				'<div class="modal-header">' +
+					'<span class="modal-title">Edit Column</span>' +
+					'<button class="modal-close" id="closeEditModal">&times;</button>' +
+				'</div>' +
+				'<div class="modal-body">' +
+					'<div class="form-group">' +
+						'<label>Column Name</label>' +
+						'<input type="text" id="editColName" class="form-input" placeholder="e.g., user_name">' +
+					'</div>' +
+					'<div class="form-group">' +
+						'<label>Data Type</label>' +
+						'<select id="editColType" class="form-select">' +
+							'<option value="VARCHAR(255)">VARCHAR(255)</option>' +
+							'<option value="INTEGER">INTEGER</option>' +
+							'<option value="BIGINT">BIGINT</option>' +
+							'<option value="TEXT">TEXT</option>' +
+							'<option value="BOOLEAN">BOOLEAN</option>' +
+							'<option value="DATE">DATE</option>' +
+							'<option value="TIMESTAMP">TIMESTAMP</option>' +
+							'<option value="NUMERIC">NUMERIC</option>' +
+							'<option value="REAL">REAL</option>' +
+							'<option value="UUID">UUID</option>' +
+							'<option value="JSONB">JSONB</option>' +
+							'<option value="BYTEA">BYTEA</option>' +
+						'</select>' +
+					'</div>' +
+					'<div class="form-group">' +
+						'<label><input type="checkbox" id="editColNotNull"> NOT NULL</label>' +
+					'</div>' +
+					'<div class="form-group">' +
+						'<label>Default Value</label>' +
+						'<input type="text" id="editColDefault" class="form-input" placeholder="e.g., 0 or default">' +
+					'</div>' +
+					'<div class="form-group">' +
+						'<label>Comment</label>' +
+						'<input type="text" id="editColComment" class="form-input" placeholder="Optional comment">' +
+					'</div>' +
+				'</div>' +
+				'<div class="modal-footer">' +
+					'<button class="btn-cancel" id="cancelEditCol">Cancel</button>' +
+					'<button class="btn-confirm" id="confirmEditCol">Save Changes</button>' +
+				'</div>' +
+			'</div>' +
+		'</div>';
+		document.body.insertAdjacentHTML('beforeend', editModalHtml);
+
+		modal = document.getElementById('editColModal');
+
+		// Close handlers
+		document.getElementById('closeEditModal').addEventListener('click', function() {
+			modal.style.display = 'none';
+		});
+		document.getElementById('cancelEditCol').addEventListener('click', function() {
+			modal.style.display = 'none';
+		});
+		modal.addEventListener('click', function(e) {
+			if (e.target.id === 'editColModal') {
+				modal.style.display = 'none';
+			}
+		});
+
+		// Confirm handler
+		document.getElementById('confirmEditCol').addEventListener('click', function() {
+			var oldName = document.getElementById('editColName').getAttribute('data-original-name');
+			var newName = document.getElementById('editColName').value.trim();
+			var newType = document.getElementById('editColType').value;
+			var notNull = document.getElementById('editColNotNull').checked;
+			var defaultValue = document.getElementById('editColDefault').value.trim();
+			var comment = document.getElementById('editColComment').value.trim();
+
+			if (!newName) {
+				alert('Please enter a column name');
+				return;
+			}
+
+			if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(newName)) {
+				alert('Invalid column name. Use only letters, numbers, and underscores, starting with a letter or underscore.');
+				return;
+			}
+
+			vscode.postMessage({
+				command: 'editColumn',
+				oldColumnName: oldName,
+				newColumnName: newName,
+				newColumnType: newType,
+				notNull: notNull,
+				defaultValue: defaultValue || null,
+				comment: comment || null
+			});
+
+			modal.style.display = 'none';
+		});
+	}
+
+	// Pre-fill form
+	document.getElementById('editColName').value = colName;
+	document.getElementById('editColName').setAttribute('data-original-name', colName);
+
+	// Try to match the type
+	const typeSelect = document.getElementById('editColType');
+	let foundType = false;
+	for (let i = 0; i < typeSelect.options.length; i++) {
+		if (typeSelect.options[i].value === colType) {
+			typeSelect.selectedIndex = i;
+			foundType = true;
+			break;
+		}
+	}
+	if (!foundType) {
+		typeSelect.value = 'VARCHAR(255)';
+	}
+
+	document.getElementById('editColDefault').value = colDefault === '—' ? '' : colDefault;
+	document.getElementById('editColComment').value = colComment === '—' ? '' : colComment;
+
+	// Check NOT NULL from badges
+	const row = document.querySelector('#colBody tr[data-col-name="' + colName + '"]');
+	if (row) {
+		const badges = row.querySelectorAll('.badge');
+		let hasNotNull = false;
+		badges.forEach(b => {
+			if (b.textContent.includes('NOT NULL')) {
+				hasNotNull = true;
+			}
+		});
+		document.getElementById('editColNotNull').checked = hasNotNull;
+	}
+
+	modal.style.display = 'flex';
+}
+
+// ── Delete column button (toolbar) ───────────────────────────────────────────
+deleteColBtn.addEventListener('click', function() {
+	if (!selectedColumn) return;
+
+	if (confirm('Are you sure you want to delete column "' + selectedColumn + '"?\n\nThis will also delete all data in this column.')) {
+		vscode.postMessage({
+			command: 'deleteColumn',
+			columnName: selectedColumn
+		});
+	}
+	// Clear selection after delete attempt
+	selectedColumn = null;
+});
 </script>
 </body>
 </html>`;
