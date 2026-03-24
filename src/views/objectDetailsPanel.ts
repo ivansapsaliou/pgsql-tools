@@ -143,64 +143,21 @@ export class ObjectDetailsPanel {
 				} catch (err) {
 					vscode.window.showErrorMessage(`Failed to delete column: ${err}`);
 				}
-			} else if (message.command === 'editColumn') {
+			} else if (message.command === 'renameColumn') {
 				try {
 					const oldColName = message.oldColumnName;
 					const newColName = message.newColumnName;
-					const newColType = message.newColumnType;
-					const notNull = message.notNull;
-					const defaultValue = message.defaultValue || null;
-					const comment = message.comment || null;
-
-					// Rename column if name changed
-					if (oldColName !== newColName) {
-						await queryExecutor.executeQuery(
-							`ALTER TABLE "${schema}"."${objectName}" RENAME COLUMN "${oldColName}" TO "${newColName}"`
-						);
-					}
-
-					// Alter column type and constraints
-					let sql = `ALTER TABLE "${schema}"."${objectName}" ALTER COLUMN "${newColName}" TYPE ${newColType}`;
+					const sql = `ALTER TABLE "${schema}"."${objectName}" RENAME COLUMN "${oldColName}" TO "${newColName}"`;
 					await queryExecutor.executeQuery(sql);
 
-					if (notNull) {
-						await queryExecutor.executeQuery(
-							`ALTER TABLE "${schema}"."${objectName}" ALTER COLUMN "${newColName}" SET NOT NULL`
-						);
-					} else {
-						await queryExecutor.executeQuery(
-							`ALTER TABLE "${schema}"."${objectName}" ALTER COLUMN "${newColName}" DROP NOT NULL`
-						);
-					}
-
-					if (defaultValue !== null && defaultValue !== '') {
-						await queryExecutor.executeQuery(
-							`ALTER TABLE "${schema}"."${objectName}" ALTER COLUMN "${newColName}" SET DEFAULT ${defaultValue}`
-						);
-					} else {
-						await queryExecutor.executeQuery(
-							`ALTER TABLE "${schema}"."${objectName}" ALTER COLUMN "${newColName}" DROP DEFAULT`
-						);
-					}
-
-					if (comment) {
-						await queryExecutor.executeQuery(
-							`COMMENT ON COLUMN "${schema}"."${objectName}"."${newColName}" IS '${comment.replace(/'/g, "''")}'`
-						);
-					} else {
-						await queryExecutor.executeQuery(
-							`COMMENT ON COLUMN "${schema}"."${objectName}"."${newColName}" IS NULL`
-						);
-					}
-
-					vscode.window.showInformationMessage(`Column "${newColName}" updated successfully`);
+					vscode.window.showInformationMessage(`Column "${oldColName}" renamed to "${newColName}" successfully`);
 					// Refresh the panel
 					await ObjectDetailsPanel.show(
 						context, schema, objectName, 'table',
 						queryExecutor, connectionManager, resultsViewProvider
 					);
 				} catch (err) {
-					vscode.window.showErrorMessage(`Failed to edit column: ${err}`);
+					vscode.window.showErrorMessage(`Failed to rename column: ${err}`);
 				}
 			}
 		});
@@ -222,6 +179,12 @@ export class ObjectDetailsPanel {
 					schema, objectName, ddl, null,
 					indexes, foreignKeys, constraints, columnDetails
 				);
+			} else if (objectType === 'function') {
+				const ddl = await queryExecutor.getFunctionDDL(schema, objectName);
+				this.currentPanel.webview.html = this.getFunctionHtml(schema, objectName, ddl);
+			} else if (objectType === 'procedure') {
+				const ddl = await queryExecutor.getProcedureDDL(schema, objectName);
+				this.currentPanel.webview.html = this.getFunctionHtml(schema, objectName, ddl);
 			}
 		} catch (err) {
 			vscode.window.showErrorMessage(`Failed to load object details: ${err}`);
@@ -403,7 +366,7 @@ export class ObjectDetailsPanel {
 				<td class="monospace small">${fkRef}</td>
 				<td class="comment-cell">${col.col_comment ? esc(col.col_comment) : '<span style="opacity:0.35">—</span>'}</td>
 				<td class="actions-cell">
-					<button class="btn-delete-col" data-col="${esc(col.col)}" title="Delete column">✕</button>
+					<button type="button" class="btn-delete-col" data-col="${esc(col.col)}" title="Delete column">✕</button>
 				</td>
 			</tr>`;
 		}).join('');
@@ -634,27 +597,41 @@ export class ObjectDetailsPanel {
 	.page-btn.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: transparent; }
 	.page-info { opacity: 0.55; margin-left: auto; }
 
-	/* ── Add Column button (icon only) ── */
+	/* ── Add Column button ── */
 	.btn-add-col {
-		background: none; border: none; color: var(--vscode-button-foreground);
-		cursor: pointer; padding: 2px 8px; font-size: 14px; font-weight: 600;
-		border-radius: 3px;
+		display: inline-flex; align-items: center; justify-content: center;
+		width: 24px; height: 22px;
+		padding: 0;
+		background: var(--vscode-button-background);
+		color: var(--vscode-button-foreground);
+		border: none; border-radius: 2px;
+		font-family: var(--vscode-font-family); font-size: 14px; font-weight: 500;
+		cursor: pointer; white-space: nowrap;
 	}
 	.btn-add-col:hover { background: var(--vscode-button-hoverBackground); }
 
-	/* ── Column toolbar actions (disabled until row selected) ── */
+	/* ── Column action buttons (delete, edit) ── */
 	.btn-col-action {
-		background: none; border: none; color: var(--vscode-disabledForeground, #808080);
-		cursor: not-allowed; padding: 2px 8px; font-size: 14px; opacity: 0.5;
-		border-radius: 3px;
+		display: inline-flex; align-items: center; justify-content: center;
+		width: 24px; height: 22px;
+		padding: 0;
+		background: var(--vscode-button-background);
+		color: var(--vscode-button-foreground);
+		border: none; border-radius: 2px;
+		font-family: var(--vscode-font-family); font-size: 12px; font-weight: 500;
+		cursor: pointer; white-space: nowrap; margin-left: 4px;
 	}
-	.btn-col-action.active {
-		color: var(--vscode-button-foreground); cursor: pointer; opacity: 1;
-	}
-	.btn-col-action.active:hover { background: var(--vscode-list-hoverBackground); }
-	.btn-col-action--del.active { color: var(--vscode-errorForeground, #f14c4c); }
+	.btn-col-action:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
+	.btn-col-action:disabled { opacity: 0.4; cursor: default; }
+	#deleteColBtn:hover:not(:disabled) { color: var(--vscode-errorForeground, #f14c4c); }
+	#editColBtn:hover:not(:disabled) { color: var(--vscode-textLink-foreground, #3794ff); }
 
-	/* ── Delete column button (per row) ── */
+	/* ── Column row selection ── */
+	#colBody tr { cursor: pointer; }
+	#colBody tr.selected { background: var(--vscode-list-activeSelectionBackground); }
+	#colBody tr:hover:not(.selected) { background: var(--vscode-list-hoverBackground); }
+
+	/* ── Delete column button ── */
 	.btn-delete-col {
 		background: none; border: none; color: var(--vscode-errorForeground, #f14c4c);
 		cursor: pointer; padding: 2px 6px; font-size: 12px; opacity: 0.5;
@@ -662,11 +639,6 @@ export class ObjectDetailsPanel {
 	}
 	.btn-delete-col:hover { opacity: 1; background: rgba(241, 76, 76, 0.15); }
 	.actions-cell { text-align: center; width: 40px; }
-
-	/* ── Selected row in columns table ── */
-	#colBody tr.selected td {
-		background: var(--vscode-list-activeSelectionBackground, rgba(0, 90, 156, 0.3));
-	}
 
 	/* ── Type badges with colors ── */
 	.type-badge {
@@ -765,9 +737,9 @@ export class ObjectDetailsPanel {
 	<!-- ── COLUMNS (первая вкладка) ── -->
 	<div class="tab-pane active" id="columns-pane">
 		<div class="data-toolbar">
-			<button class="btn-add-col" id="addColBtn" title="Add new column">+</button>
-			<button class="btn-col-action" id="editColBtn" title="Edit selected column" disabled>✎</button>
-			<button class="btn-col-action btn-col-action--del" id="deleteColBtn" title="Delete selected column" disabled>−</button>
+			<button type="button" class="btn-add-col" id="addColBtn" title="Add column">+</button>
+			<button type="button" class="btn-col-action" id="deleteColBtn" title="Delete selected column" disabled>−</button>
+			<button type="button" class="btn-col-action" id="editColBtn" title="Edit selected column" disabled>✎</button>
 			<div class="search-wrap">
 				<span class="search-icon">⌕</span>
 				<input class="search-input" id="colSearch" placeholder="Filter columns…" autocomplete="off">
@@ -865,11 +837,43 @@ export class ObjectDetailsPanel {
 require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' } });
 const vscode = acquireVsCodeApi();
 
-// ── Monaco theme ──
-function monacoTheme() {
-	if (document.body.classList.contains('vscode-light')) return 'vs';
-	if (document.body.classList.contains('vscode-high-contrast')) return 'hc-black';
-	return 'vs-dark';
+// ── Monaco theme with VS Code variables support ──
+function getComputedStyleValue(variable) {
+	try {
+		return getComputedStyle(document.body).getPropertyValue(variable).trim();
+	} catch (e) {
+		return '';
+	}
+}
+
+function defineVscodeTheme() {
+	const isDark = document.body.classList.contains('vscode-dark') || 
+	              document.body.classList.contains('vscode-high-contrast');
+	
+	const vscodeTheme = {
+		base: isDark ? 'vs-dark' : 'vs',
+		inherit: true,
+		rules: [],
+		colors: {
+			'editor.background': getComputedStyleValue('--vscode-editor-background') || (isDark ? '#1e1e1e' : '#ffffff'),
+			'editor.foreground': getComputedStyleValue('--vscode-editor-foreground') || (isDark ? '#d4d4d4' : '#000000'),
+			'editor.lineHighlightBackground': getComputedStyleValue('--vscode-editorLineHighlightBackground') || (isDark ? '#264f78' : '#eeeeee'),
+			'editor.selectionBackground': getComputedStyleValue('--vscode-editor.selectionBackground') || (isDark ? '#264f78' : '#add6ff'),
+			'editorLineNumber.foreground': getComputedStyleValue('--vscode-editorLineNumber-foreground') || (isDark ? '#858585' : '#237893'),
+			'editorCursor.foreground': getComputedStyleValue('--vscode-editorCursor-foreground') || (isDark ? '#aeafad' : '#000000'),
+			'editor.inactiveSelectionBackground': getComputedStyleValue('--vscode-editor.inactiveSelectionBackground') || (isDark ? '#3a3d41' : '#e5ebf1'),
+		},
+	};
+	
+	// Handle high contrast
+	if (document.body.classList.contains('vscode-high-contrast')) {
+		vscodeTheme.base = 'hc-black';
+		vscodeTheme.colors['editor.background'] = getComputedStyleValue('--vscode-editor-background') || '#000000';
+		vscodeTheme.colors['editor.foreground'] = getComputedStyleValue('--vscode-editor-foreground') || '#ffffff';
+	}
+	
+	monaco.editor.defineTheme('vscode-theme', vscodeTheme);
+	return 'vscode-theme';
 }
 
 let editor;
@@ -877,11 +881,12 @@ const ddlContent = ${JSON.stringify(ddl)};
 
 require(['vs/editor/editor.main'], () => {
 	editor = monaco.editor.create(document.getElementById('ddlEditor'), {
-		value: ddlContent, language: 'sql', theme: monacoTheme(),
+		value: ddlContent, language: 'sql', theme: defineVscodeTheme(),
 		minimap: { enabled: false }, fontSize: 13, readOnly: true,
-		automaticLayout: true, scrollBeyondLastLine: false, wordWrap: 'on'
+		automaticLayout: true, scrollBeyondLastLine: false, wordWrap: 'on',
+		tabSize: 2
 	});
-	new MutationObserver(() => monaco.editor.setTheme(monacoTheme()))
+	new MutationObserver(() => monaco.editor.setTheme(defineVscodeTheme()))
 		.observe(document.body, { attributes: true, attributeFilter: ['class'] });
 });
 
@@ -920,15 +925,12 @@ document.querySelectorAll('.fk-link').forEach(link => {
 });
 
 // ── Column search ──
-const colSearch = document.getElementById('colSearch');
-if (colSearch) {
-	colSearch.addEventListener('input', e => {
-		const term = e.target.value.toLowerCase();
-		document.querySelectorAll('#colBody tr').forEach(row => {
-			row.style.display = term && !row.textContent.toLowerCase().includes(term) ? 'none' : '';
-		});
+document.getElementById('colSearch').addEventListener('input', e => {
+	const term = e.target.value.toLowerCase();
+	document.querySelectorAll('#colBody tr').forEach(row => {
+		row.style.display = term && !row.textContent.toLowerCase().includes(term) ? 'none' : '';
 	});
-}
+});
 
 // ── Data search ──
 const dataSearch = document.getElementById('dataSearch');
@@ -1156,8 +1158,8 @@ var modalHtml = '<div id="addColModal" class="modal-overlay" style="display:none
 			'</div>' +
 		'</div>' +
 		'<div class="modal-footer">' +
-			'<button class="btn-cancel" id="cancelAddCol">Cancel</button>' +
-			'<button class="btn-confirm" id="confirmAddCol">Add Column</button>' +
+			'<button type="button" class="btn-cancel" id="cancelAddCol">Cancel</button>' +
+			'<button type="button" class="btn-confirm" id="confirmAddCol">Add Column</button>' +
 		'</div>' +
 	'</div>' +
 '</div>';
@@ -1219,221 +1221,221 @@ document.getElementById('addColModal').addEventListener('click', function(e) {
 	}
 });
 
-// ── Column row selection ─────────────────────────────────────────────────────
-let selectedColumn = null;
-const editColBtn = document.getElementById('editColBtn');
-const deleteColBtn = document.getElementById('deleteColBtn');
+// ── Column row selection ───────────────────────────────────────────────
+let selectedColumnName = null;
 
-// Column selection handler
-const colBody = document.getElementById('colBody');
-if (colBody) {
-	colBody.addEventListener('click', function(e) {
-		// Handle row selection
-		const row = e.target.closest('#colBody tr');
-		if (row) {
-			// Toggle selection on row click
-			const wasSelected = row.classList.contains('selected');
-			// Remove selection from all rows
-			document.querySelectorAll('#colBody tr').forEach(r => r.classList.remove('selected'));
+document.getElementById('colBody').addEventListener('click', function(e) {
+	// Skip if clicking on a button inside the row
+	if (e.target.closest('.btn-delete-col')) return;
+	
+	// Check if clicking on a row
+	var row = e.target.closest('tr[data-col-name]');
+	if (!row) return;
 
-			if (!wasSelected) {
-				row.classList.add('selected');
-				selectedColumn = row.getAttribute('data-col-name');
-				if (editColBtn) { editColBtn.disabled = false; editColBtn.classList.add('active'); }
-				if (deleteColBtn) { deleteColBtn.disabled = false; deleteColBtn.classList.add('active'); }
-			} else {
-				selectedColumn = null;
-				if (editColBtn) { editColBtn.disabled = true; editColBtn.classList.remove('active'); }
-				if (deleteColBtn) { deleteColBtn.disabled = true; deleteColBtn.classList.remove('active'); }
-			}
-		}
-
-		// Handle delete button click in row
-		const btn = e.target.closest('.btn-delete-col');
-		if (btn) {
-			var colName = btn.getAttribute('data-col');
-			if (colName && confirm('Are you sure you want to delete column "' + colName + '"?\n\nThis will also delete all data in this column.')) {
-				vscode.postMessage({
-					command: 'deleteColumn',
-					columnName: colName
-				});
-			}
-		}
+	// Remove previous selection
+	document.querySelectorAll('#colBody tr').forEach(function(r) {
+		r.classList.remove('selected');
 	});
-}
 
-// Edit column button handler - only if element exists
-if (editColBtn) {
-	editColBtn.addEventListener('click', function() {
-		if (!selectedColumn) return;
+	// Add selection to clicked row
+	row.classList.add('selected');
+	selectedColumnName = row.getAttribute('data-col-name');
 
-		// Get current column details from the selected row
-		const row = document.querySelector('#colBody tr[data-col-name="' + selectedColumn + '"]');
-		if (!row) return;
+	// Enable action buttons
+	document.getElementById('deleteColBtn').disabled = false;
+	document.getElementById('editColBtn').disabled = false;
+});
 
-		// Extract column info from the row
-		const cells = row.querySelectorAll('td');
-		const colName = selectedColumn;
-		const colTypeText = cells[1] ? cells[1].textContent.trim() : '';
-		const colDefault = cells[3] ? cells[3].textContent.trim() : '';
-		const colComment = cells[5] ? cells[5].textContent.trim() : '';
+// ── Delete selected column ────────────────────────────────────────────
+document.getElementById('deleteColBtn').addEventListener('click', function() {
+	if (!selectedColumnName) return;
 
-		// Show edit modal
-		showEditColModal(colName, colTypeText, colDefault, colComment);
-	});
-}
-
-// ── Edit Column Modal ───────────────────────────────────────────────────────
-function showEditColModal(colName, colType, colDefault, colComment) {
-	let modal = document.getElementById('editColModal');
-	if (!modal) {
-		var editModalHtml = '<div id="editColModal" class="modal-overlay" style="display:none;">' +
-			'<div class="modal-content">' +
-				'<div class="modal-header">' +
-					'<span class="modal-title">Edit Column</span>' +
-					'<button class="modal-close" id="closeEditModal">&times;</button>' +
-				'</div>' +
-				'<div class="modal-body">' +
-					'<div class="form-group">' +
-						'<label>Column Name</label>' +
-						'<input type="text" id="editColName" class="form-input" placeholder="e.g., user_name">' +
-					'</div>' +
-					'<div class="form-group">' +
-						'<label>Data Type</label>' +
-						'<select id="editColType" class="form-select">' +
-							'<option value="VARCHAR(255)">VARCHAR(255)</option>' +
-							'<option value="INTEGER">INTEGER</option>' +
-							'<option value="BIGINT">BIGINT</option>' +
-							'<option value="TEXT">TEXT</option>' +
-							'<option value="BOOLEAN">BOOLEAN</option>' +
-							'<option value="DATE">DATE</option>' +
-							'<option value="TIMESTAMP">TIMESTAMP</option>' +
-							'<option value="NUMERIC">NUMERIC</option>' +
-							'<option value="REAL">REAL</option>' +
-							'<option value="UUID">UUID</option>' +
-							'<option value="JSONB">JSONB</option>' +
-							'<option value="BYTEA">BYTEA</option>' +
-						'</select>' +
-					'</div>' +
-					'<div class="form-group">' +
-						'<label><input type="checkbox" id="editColNotNull"> NOT NULL</label>' +
-					'</div>' +
-					'<div class="form-group">' +
-						'<label>Default Value</label>' +
-						'<input type="text" id="editColDefault" class="form-input" placeholder="e.g., 0 or default">' +
-					'</div>' +
-					'<div class="form-group">' +
-						'<label>Comment</label>' +
-						'<input type="text" id="editColComment" class="form-input" placeholder="Optional comment">' +
-					'</div>' +
-				'</div>' +
-				'<div class="modal-footer">' +
-					'<button class="btn-cancel" id="cancelEditCol">Cancel</button>' +
-					'<button class="btn-confirm" id="confirmEditCol">Save Changes</button>' +
-				'</div>' +
-			'</div>' +
-		'</div>';
-		document.body.insertAdjacentHTML('beforeend', editModalHtml);
-
-		modal = document.getElementById('editColModal');
-
-		// Close handlers
-		document.getElementById('closeEditModal').addEventListener('click', function() {
-			modal.style.display = 'none';
-		});
-		document.getElementById('cancelEditCol').addEventListener('click', function() {
-			modal.style.display = 'none';
-		});
-		modal.addEventListener('click', function(e) {
-			if (e.target.id === 'editColModal') {
-				modal.style.display = 'none';
-			}
-		});
-
-		// Confirm handler
-		document.getElementById('confirmEditCol').addEventListener('click', function() {
-			var oldName = document.getElementById('editColName').getAttribute('data-original-name');
-			var newName = document.getElementById('editColName').value.trim();
-			var newType = document.getElementById('editColType').value;
-			var notNull = document.getElementById('editColNotNull').checked;
-			var defaultValue = document.getElementById('editColDefault').value.trim();
-			var comment = document.getElementById('editColComment').value.trim();
-
-			if (!newName) {
-				alert('Please enter a column name');
-				return;
-			}
-
-			if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(newName)) {
-				alert('Invalid column name. Use only letters, numbers, and underscores, starting with a letter or underscore.');
-				return;
-			}
-
-			vscode.postMessage({
-				command: 'editColumn',
-				oldColumnName: oldName,
-				newColumnName: newName,
-				newColumnType: newType,
-				notNull: notNull,
-				defaultValue: defaultValue || null,
-				comment: comment || null
-			});
-
-			modal.style.display = 'none';
-		});
-	}
-
-	// Pre-fill form
-	document.getElementById('editColName').value = colName;
-	document.getElementById('editColName').setAttribute('data-original-name', colName);
-
-	// Try to match the type
-	const typeSelect = document.getElementById('editColType');
-	let foundType = false;
-	for (let i = 0; i < typeSelect.options.length; i++) {
-		if (typeSelect.options[i].value === colType) {
-			typeSelect.selectedIndex = i;
-			foundType = true;
-			break;
-		}
-	}
-	if (!foundType) {
-		typeSelect.value = 'VARCHAR(255)';
-	}
-
-	document.getElementById('editColDefault').value = colDefault === '—' ? '' : colDefault;
-	document.getElementById('editColComment').value = colComment === '—' ? '' : colComment;
-
-	// Check NOT NULL from badges
-	const row = document.querySelector('#colBody tr[data-col-name="' + colName + '"]');
-	if (row) {
-		const badges = row.querySelectorAll('.badge');
-		let hasNotNull = false;
-		badges.forEach(b => {
-			if (b.textContent.includes('NOT NULL')) {
-				hasNotNull = true;
-			}
-		});
-		document.getElementById('editColNotNull').checked = hasNotNull;
-	}
-
-	modal.style.display = 'flex';
-}
-
-// ── Delete column button (toolbar) ───────────────────────────────────────────
-deleteColBtn.addEventListener('click', function() {
-	if (!selectedColumn) return;
-
-	if (confirm('Are you sure you want to delete column "' + selectedColumn + '"?\n\nThis will also delete all data in this column.')) {
+	if (confirm('Are you sure you want to delete column "' + selectedColumnName + '"?\\n\\nThis will also delete all data in this column.')) {
 		vscode.postMessage({
 			command: 'deleteColumn',
-			columnName: selectedColumn
+			columnName: selectedColumnName
 		});
 	}
-	// Clear selection after delete attempt
-	selectedColumn = null;
+	// Clear selection after delete
+	selectedColumnName = null;
+	document.getElementById('deleteColBtn').disabled = true;
+	document.getElementById('editColBtn').disabled = true;
+});
+
+// ── Edit selected column ───────────────────────────────────────────────
+document.getElementById('editColBtn').addEventListener('click', function() {
+	if (!selectedColumnName) return;
+
+	vscode.window.showInputBox({
+		prompt: 'Edit column "' + selectedColumnName + '" - Enter new name (or press Esc to cancel)',
+		value: selectedColumnName
+	}).then(function(newName) {
+		if (newName && newName !== selectedColumnName) {
+			// Rename column using ALTER TABLE ... RENAME COLUMN
+			vscode.postMessage({
+				command: 'renameColumn',
+				oldColumnName: selectedColumnName,
+				newColumnName: newName
+			});
+		}
+	});
+});
+
+// Inline delete button - stop propagation to prevent row selection
+document.querySelectorAll('.btn-delete-col').forEach(function(btn) {
+	btn.addEventListener('click', function(e) {
+		e.stopPropagation();
+		var colName = this.getAttribute('data-col');
+		if (!colName) return;
+
+		if (confirm('Are you sure you want to delete column "' + colName + '"?\\n\\nThis will also delete all data in this column.')) {
+			vscode.postMessage({
+				command: 'deleteColumn',
+				columnName: colName
+			});
+		}
+	});
 });
 </script>
+</body>
+</html>`;
+	}
+
+	// ── HTML для функций и процедур ──────────────────────────────────────────
+
+	private static getFunctionHtml(
+		schema: string,
+		functionName: string,
+		ddl: string
+	): string {
+		return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
+<style>
+	*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+	html, body {
+		width: 100%; height: 100%;
+		font-family: var(--vscode-font-family);
+		font-size: var(--vscode-font-size, 13px);
+		background: var(--vscode-editor-background);
+		color: var(--vscode-foreground);
+		display: flex; flex-direction: column; overflow: hidden;
+	}
+
+	.header {
+		display: flex; align-items: center; justify-content: space-between;
+		padding: 6px 12px;
+		background: var(--vscode-editorGroupHeader-tabsBackground);
+		border-bottom: 1px solid var(--vscode-panel-border);
+		flex-shrink: 0; gap: 8px;
+	}
+	.header-left { display: flex; align-items: center; gap: 8px; }
+	.header-title { font-size: 13px; font-weight: 600; }
+	.header-meta {
+		font-size: 11px; opacity: 0.55;
+		background: var(--vscode-badge-background);
+		color: var(--vscode-badge-foreground);
+		padding: 1px 7px; border-radius: 10px;
+	}
+
+	.content { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+	#ddlEditor { flex: 1; }
+</style>
+</head>
+<body>
+	<div class="header">
+		<div class="header-left">
+			<span class="header-title">${esc(functionName)}</span>
+			<span class="header-meta">Function</span>
+		</div>
+	</div>
+	<div class="content">
+		<div id="ddlEditor"></div>
+	</div>
+
+	<script>
+	require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' } });
+
+	require(['vs/editor/editor.main'], function () {
+		const ddl = ${JSON.stringify(ddl)};
+
+		// Define custom theme that inherits from VS Code CSS variables
+		function getComputedStyleValue(variable) {
+			try {
+				return getComputedStyle(document.body).getPropertyValue(variable).trim();
+			} catch (e) {
+				return '';
+			}
+		}
+
+		const vscodeTheme = {
+			base: 'vs',
+			inherit: true,
+			rules: [],
+			colors: {
+				'editor.background': getComputedStyleValue('--vscode-editor-background') || '#ffffff',
+				'editor.foreground': getComputedStyleValue('--vscode-editor-foreground') || '#000000',
+				'editor.lineHighlightBackground': getComputedStyleValue('--vscode-editorLineHighlightBackground') || '#eeeeee',
+				'editor.selectionBackground': getComputedStyleValue('--vscode-editor.selectionBackground') || '#add6ff',
+				'editorLineNumber.foreground': getComputedStyleValue('--vscode-editorLineNumber-foreground') || '#237893',
+				'editorCursor.foreground': getComputedStyleValue('--vscode-editorCursor-foreground') || '#000000',
+				'editor.inactiveSelectionBackground': getComputedStyleValue('--vscode-editor.inactiveSelectionBackground') || '#e5ebf1',
+			},
+		};
+
+		// Check if dark mode
+		const isDark = document.body.classList.contains('vscode-dark') || 
+		              document.body.classList.contains('vscode-high-contrast');
+		if (isDark) {
+			vscodeTheme.base = 'vs-dark';
+			vscodeTheme.colors['editor.background'] = getComputedStyleValue('--vscode-editor-background') || '#1e1e1e';
+			vscodeTheme.colors['editor.foreground'] = getComputedStyleValue('--vscode-editor-foreground') || '#d4d4d4';
+			vscodeTheme.colors['editor.lineHighlightBackground'] = getComputedStyleValue('--vscode-editorLineHighlightBackground') || '#264f78';
+			vscodeTheme.colors['editor.selectionBackground'] = getComputedStyleValue('--vscode-editor.selectionBackground') || '#264f78';
+			vscodeTheme.colors['editorLineNumber.foreground'] = getComputedStyleValue('--vscode-editorLineNumber-foreground') || '#858585';
+			vscodeTheme.colors['editorCursor.foreground'] = getComputedStyleValue('--vscode-editorCursor-foreground') || '#aeafad';
+			vscodeTheme.colors['editor.inactiveSelectionBackground'] = getComputedStyleValue('--vscode-editor.inactiveSelectionBackground') || '#3a3d41';
+		}
+
+		monaco.editor.defineTheme('vscode-theme', vscodeTheme);
+		monaco.editor.setTheme('vscode-theme');
+
+		const editor = monaco.editor.create(document.getElementById('ddlEditor'), {
+			value: ddl,
+			language: 'sql',
+			theme: 'vscode-theme',
+			readOnly: true,
+			minimap: { enabled: false },
+			fontSize: 13,
+			tabSize: 2,
+			automaticLayout: true,
+			scrollBeyondLastLine: false,
+			wordWrap: 'on',
+		});
+
+		// Adjust editor on resize
+		window.addEventListener('resize', () => editor.layout());
+
+		// Listen for theme changes
+		const observer = new MutationObserver(() => {
+			const newIsDark = document.body.classList.contains('vscode-dark') || 
+			                 document.body.classList.contains('vscode-high-contrast');
+			vscodeTheme.base = newIsDark ? 'vs-dark' : 'vs';
+			vscodeTheme.colors['editor.background'] = getComputedStyleValue('--vscode-editor-background') || (newIsDark ? '#1e1e1e' : '#ffffff');
+			vscodeTheme.colors['editor.foreground'] = getComputedStyleValue('--vscode-editor-foreground') || (newIsDark ? '#d4d4d4' : '#000000');
+			vscodeTheme.colors['editor.lineHighlightBackground'] = getComputedStyleValue('--vscode-editorLineHighlightBackground') || (newIsDark ? '#264f78' : '#eeeeee');
+			vscodeTheme.colors['editor.selectionBackground'] = getComputedStyleValue('--vscode-editor.selectionBackground') || (newIsDark ? '#264f78' : '#add6ff');
+			vscodeTheme.colors['editorLineNumber.foreground'] = getComputedStyleValue('--vscode-editorLineNumber-foreground') || (newIsDark ? '#858585' : '#237893');
+			vscodeTheme.colors['editorCursor.foreground'] = getComputedStyleValue('--vscode-editorCursor-foreground') || (newIsDark ? '#aeafad' : '#000000');
+			vscodeTheme.colors['editor.inactiveSelectionBackground'] = getComputedStyleValue('--vscode-editor.inactiveSelectionBackground') || (newIsDark ? '#3a3d41' : '#e5ebf1');
+			monaco.editor.defineTheme('vscode-theme', vscodeTheme);
+			monaco.editor.setTheme('vscode-theme');
+		});
+		observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+	});
+	</script>
 </body>
 </html>`;
 	}

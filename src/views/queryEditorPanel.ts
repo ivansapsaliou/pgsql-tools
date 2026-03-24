@@ -246,11 +246,49 @@ export class QueryEditorPanel {
 		const vscode = acquireVsCodeApi();
 		let editor, isExecuting = false;
 
+		// VS Code theme inheritance
+		function getComputedStyleValue(variable) {
+			try {
+				return getComputedStyle(document.body).getPropertyValue(variable).trim();
+			} catch (e) {
+				return '';
+			}
+		}
+
+		function defineVscodeTheme() {
+			const isDark = document.body.classList.contains('vscode-dark') || 
+			              document.body.classList.contains('vscode-high-contrast');
+			
+			const vscodeTheme = {
+				base: isDark ? 'vs-dark' : 'vs',
+				inherit: true,
+				rules: [],
+				colors: {
+					'editor.background': getComputedStyleValue('--vscode-editor-background') || (isDark ? '#1e1e1e' : '#ffffff'),
+					'editor.foreground': getComputedStyleValue('--vscode-editor-foreground') || (isDark ? '#d4d4d4' : '#000000'),
+					'editor.lineHighlightBackground': getComputedStyleValue('--vscode-editorLineHighlightBackground') || (isDark ? '#264f78' : '#eeeeee'),
+					'editor.selectionBackground': getComputedStyleValue('--vscode-editor.selectionBackground') || (isDark ? '#264f78' : '#add6ff'),
+					'editorLineNumber.foreground': getComputedStyleValue('--vscode-editorLineNumber-foreground') || (isDark ? '#858585' : '#237893'),
+					'editorCursor.foreground': getComputedStyleValue('--vscode-editorCursor-foreground') || (isDark ? '#aeafad' : '#000000'),
+					'editor.inactiveSelectionBackground': getComputedStyleValue('--vscode-editor.inactiveSelectionBackground') || (isDark ? '#3a3d41' : '#e5ebf1'),
+				},
+			};
+			
+			if (document.body.classList.contains('vscode-high-contrast')) {
+				vscodeTheme.base = 'hc-black';
+				vscodeTheme.colors['editor.background'] = getComputedStyleValue('--vscode-editor-background') || '#000000';
+				vscodeTheme.colors['editor.foreground'] = getComputedStyleValue('--vscode-editor-foreground') || '#ffffff';
+			}
+			
+			monaco.editor.defineTheme('vscode-theme', vscodeTheme);
+			return 'vscode-theme';
+		}
+
 		require(['vs/editor/editor.main'], () => {
 			editor = monaco.editor.create(document.getElementById('monacoEditor'), {
 				value: '',
 				language: 'sql',
-				theme: document.body.classList.contains('vscode-light') ? 'vs' : 'vs-dark',
+				theme: defineVscodeTheme(),
 				minimap: { enabled: false },
 				fontSize: 13,
 				tabSize: 2,
@@ -260,6 +298,9 @@ export class QueryEditorPanel {
 				quickSuggestions: { other: true, comments: false, strings: false },
 				suggestOnTriggerCharacters: true
 			});
+
+			new MutationObserver(() => monaco.editor.setTheme(defineVscodeTheme()))
+				.observe(document.body, { attributes: true, attributeFilter: ['class'] });
 
 			editor.onDidChangeModelContent(() => {
 				vscode.postMessage({ command: 'queryChanged', query: editor.getValue() });

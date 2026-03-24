@@ -110,7 +110,7 @@ export class QueryExecutor {
 		`);
 
 		const columnLines = colsRes.rows.map(row => {
-			let line = `    "${row.col}" ${row.col_type}`;
+			let line = `    ${row.col} ${row.col_type}`;
 			if (row.col_default !== null && row.col_default !== undefined) {
 				line += ` DEFAULT ${row.col_default}`;
 			}
@@ -141,12 +141,12 @@ export class QueryExecutor {
 		`);
 
 		const constraintLines = conRes.rows.map(row =>
-			`    CONSTRAINT "${row.name}" ${row.def}`
+			`    CONSTRAINT ${row.name} ${row.def}`
 		);
 
 		// ── 3. Assemble CREATE TABLE ──────────────────────────────────────────
 		const tableLines = [...columnLines, ...constraintLines];
-		let ddl = `CREATE TABLE "${schema}"."${tableName}" (\n`;
+		let ddl = `CREATE TABLE ${schema}.${tableName} (\n`;
 		ddl += tableLines.join(',\n');
 		ddl += '\n);\n';
 
@@ -185,7 +185,7 @@ export class QueryExecutor {
 
 		const tblComment = commentRes.rows[0]?.tbl_comment;
 		if (tblComment) {
-			ddl += `\nCOMMENT ON TABLE "${schema}"."${tableName}" IS '${tblComment.replace(/'/g, "''")}';`;
+			ddl += `\nCOMMENT ON TABLE ${schema}.${tableName} IS '${tblComment.replace(/'/g, "''")}';`;
 		}
 
 		// ── 6. Column comments ────────────────────────────────────────────────
@@ -193,11 +193,56 @@ export class QueryExecutor {
 		if (colComments.length > 0) {
 			ddl += '\n';
 			ddl += colComments.map(r =>
-				`COMMENT ON COLUMN "${schema}"."${tableName}"."${r.col}" IS '${String(r.col_comment).replace(/'/g, "''")}';`
+				`COMMENT ON COLUMN ${schema}.${tableName}.${r.col} IS '${String(r.col_comment).replace(/'/g, "''")}';`
 			).join('\n');
 		}
 
 		return ddl;
+	}
+
+	/**
+	 * Get DDL for a function using pg_get_functiondef
+	 */
+	async getFunctionDDL(schema: string, functionName: string): Promise<string> {
+		const e = (s: string) => s.replace(/'/g, "''");
+
+		const res = await this.executeQuery(`
+			SELECT pg_get_functiondef(p.oid) AS func_def
+			FROM pg_proc p
+			JOIN pg_namespace n ON n.oid = p.pronamespace
+			WHERE n.nspname = '${e(schema)}'
+			  AND p.proname = '${e(functionName)}'
+			LIMIT 1
+		`);
+
+		if (res.rows.length === 0) {
+			return `-- Function ${schema}.${functionName} not found`;
+		}
+
+		return res.rows[0].func_def || `-- Function definition not available`;
+	}
+
+	/**
+	 * Get DDL for a procedure using pg_get_functiondef
+	 */
+	async getProcedureDDL(schema: string, procedureName: string): Promise<string> {
+		const e = (s: string) => s.replace(/'/g, "''");
+
+		const res = await this.executeQuery(`
+			SELECT pg_get_functiondef(p.oid) AS proc_def
+			FROM pg_proc p
+			JOIN pg_namespace n ON n.oid = p.pronamespace
+			WHERE n.nspname = '${e(schema)}'
+			  AND p.proname = '${e(procedureName)}'
+			  AND p.prokind = 'p'
+			LIMIT 1
+		`);
+
+		if (res.rows.length === 0) {
+			return `-- Procedure ${schema}.${procedureName} not found`;
+		}
+
+		return res.rows[0].proc_def || `-- Procedure definition not available`;
 	}
 
 	async getTableData(schema: string, tableName: string, limit: number = 100, offset: number = 0): Promise<QueryResult> {

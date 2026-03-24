@@ -80,12 +80,16 @@ export async function activate(context: vscode.ExtensionContext) {
 			await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
 		}),
 
-		// ── Детали таблицы ───────────────────────────────────────────────────
+		// ── Детали таблицы / функции / процедуры ─────────────────────────────
 		vscode.commands.registerCommand('pgsql-tools.viewTableDetails', async (node: any) => {
 			const schema = node.parentSchema || 'public';
-			const tableName = node.parentTable || node.label;
+			const objectName = node.parentTable || node.label;
+			// Determine object type: function, procedure, or default to table
+			const objectType = node.contextValue === 'function' ? 'function' 
+				: node.contextValue === 'procedure' ? 'procedure' 
+				: 'table';
 			await ObjectDetailsPanel.show(
-				context, schema, tableName, 'table',
+				context, schema, objectName, objectType,
 				queryExecutor, connectionManager, resultsViewProvider
 			);
 		}),

@@ -10,6 +10,7 @@ export type NodeKind =
 	| 'group_tables'
 	| 'group_views'
 	| 'group_functions'
+	| 'group_procedures'
 	| 'group_sequences'
 	| 'group_types'
 	| 'group_indexes'
@@ -17,6 +18,7 @@ export type NodeKind =
 	| 'table'
 	| 'view'
 	| 'function'
+	| 'procedure'
 	| 'sequence'
 	| 'type'
 	| 'index'
@@ -63,6 +65,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 			group_tables: 'table',
 			group_views: 'eye',
 			group_functions: 'symbol-function',
+			group_procedures: 'symbol-method',
 			group_sequences: 'symbol-numeric',
 			group_types: 'symbol-class',
 			group_indexes: 'list-tree',
@@ -70,6 +73,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 			table: 'table',
 			view: 'file-code',
 			function: 'symbol-function',
+			procedure: 'symbol-method',
 			sequence: 'symbol-numeric',
 			type: 'symbol-class',
 			index: 'list-tree',
@@ -93,8 +97,8 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 			item.iconPath = new vscode.ThemeIcon('database', new vscode.ThemeColor('terminal.ansiGreen'));
 		}
 
-		// Double-click to open table/view details
-		if (element.contextValue === 'table' || element.contextValue === 'view') {
+		// Double-click to open table/view/function/procedure details
+		if (element.contextValue === 'table' || element.contextValue === 'view' || element.contextValue === 'function' || element.contextValue === 'procedure') {
 			item.command = element.command ?? {
 				command: 'pgsql-tools.viewTableDetails',
 				title: 'View Details',
@@ -170,6 +174,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 				this.groupNode('Tables', 'group_tables', schema, connName),
 				this.groupNode('Views', 'group_views', schema, connName),
 				this.groupNode('Functions', 'group_functions', schema, connName),
+				this.groupNode('Procedures', 'group_procedures', schema, connName),
 				this.groupNode('Sequences', 'group_sequences', schema, connName),
 				this.groupNode('Types', 'group_types', schema, connName),
 				this.groupNode('Indexes', 'group_indexes', schema, connName),
@@ -236,22 +241,57 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 						        specific_name
 						 FROM information_schema.routines
 						 WHERE routine_schema = '${esc(schema)}'
-						   AND routine_type IN ('FUNCTION', 'PROCEDURE')
+						   AND routine_type = 'FUNCTION'
 						 ORDER BY routine_name`
 					);
-					return res.rows.map(
-						(r) =>
-							new TreeNode(
-								r.routine_name,
-								vscode.TreeItemCollapsibleState.None,
-								'function',
-								schema,
-								undefined,
-								connName,
-								undefined,
-								{ returnType: r.return_type, specificName: r.specific_name }
-							)
+					return res.rows.map((r) => {
+						const n = new TreeNode(
+							r.routine_name,
+							vscode.TreeItemCollapsibleState.None,
+							'function',
+							schema,
+							undefined,
+							connName,
+							undefined,
+							{ returnType: r.return_type, specificName: r.specific_name }
+						);
+						n.command = {
+							command: 'pgsql-tools.viewTableDetails',
+							title: 'View Function Details',
+							arguments: [n],
+						};
+						return n;
+					});
+				}
+
+				case 'group_procedures': {
+					const res = await eq(
+						`SELECT routine_name, routine_type,
+						        data_type AS return_type,
+						        specific_name
+						 FROM information_schema.routines
+						 WHERE routine_schema = '${esc(schema)}'
+						   AND routine_type = 'PROCEDURE'
+						 ORDER BY routine_name`
 					);
+					return res.rows.map((r) => {
+						const n = new TreeNode(
+							r.routine_name,
+							vscode.TreeItemCollapsibleState.None,
+							'procedure',
+							schema,
+							undefined,
+							connName,
+							undefined,
+							{ returnType: r.return_type, specificName: r.specific_name }
+						);
+						n.command = {
+							command: 'pgsql-tools.viewTableDetails',
+							title: 'View Procedure Details',
+							arguments: [n],
+						};
+						return n;
+					});
 				}
 
 				case 'group_sequences': {
