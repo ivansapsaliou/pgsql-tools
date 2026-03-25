@@ -9,6 +9,7 @@ function esc(text: string): string {
 }
 
 interface ColumnDetail {
+	
 	col: string;
 	col_type: string;
 	notnull: boolean;
@@ -180,6 +181,37 @@ export class ObjectDetailsPanel {
 					break;
 				}
 
+				// Execute edited routine DDL (function/procedure recreation)
+				case 'executeRoutineDDL': {
+					try {
+						if (objectType !== 'function' && objectType !== 'procedure') {
+							throw new Error(`executeRoutineDDL is not supported for objectType="${objectType}"`);
+						}
+						const ddl: unknown = message.ddl;
+						if (typeof ddl !== 'string') {
+							throw new Error('Missing/invalid "ddl" payload');
+						}
+
+						const trimmed = ddl.trim();
+						if (!trimmed) {
+							throw new Error('DDL is empty');
+						}
+
+						// pg requires a statement terminator; pg_get_functiondef usually includes it,
+						// but user edits might remove it.
+						const finalDdl = trimmed.endsWith(';') ? trimmed : `${trimmed};`;
+
+						await queryExecutor.executeQuery(finalDdl);
+						vscode.window.showInformationMessage(
+							`${objectType === 'function' ? 'Function' : 'Procedure'} "${schema}.${objectName}" updated`
+						);
+						this._refresh(context, panelKey, schema, objectName, objectType, queryExecutor, connectionManager, resultsViewProvider);
+					} catch (err) {
+						vscode.window.showErrorMessage(`Failed to execute DDL: ${err}`);
+					}
+					break;
+				}
+
 				case 'createColumn': {
 					try {
 						let sql = `ALTER TABLE "${schema}"."${objectName}" ADD COLUMN "${message.columnName}" ${message.columnType}`;
@@ -201,13 +233,92 @@ export class ObjectDetailsPanel {
 
 				case 'deleteColumn': {
 					try {
-						await queryExecutor.executeQuery(
-							`ALTER TABLE "${schema}"."${objectName}" DROP COLUMN "${message.columnName}"`
-						);
-						vscode.window.showInformationMessage(`Column "${message.columnName}" deleted`);
+						let usedCascade = false;
+						try {
+							await queryExecutor.executeQuery(
+								`ALTER TABLE "${schema}"."${objectName}" DROP COLUMN IF EXISTS "${message.columnName}"`
+							);
+						} catch (err1) {
+							// If the column has dependent objects (views/functions/FKs/etc),
+							// DROP COLUMN may fail; retry with CASCADE to actually remove it.
+							usedCascade = true;
+							await queryExecutor.executeQuery(
+								`ALTER TABLE "${schema}"."${objectName}" DROP COLUMN IF EXISTS "${message.columnName}" CASCADE`
+							);
+							vscode.window.showInformationMessage(`Column "${message.columnName}" deleted (with CASCADE)`);
+						}
+						if(!usedCascade){
+							vscode.window.showInformationMessage(`Column "${message.columnName}" deleted`);
+						}
 						this._refresh(context, panelKey, schema, objectName, objectType, queryExecutor, connectionManager, resultsViewProvider);
 					} catch (err) {
 						vscode.window.showErrorMessage(`Failed to delete column: ${err}`);
+					}
+					break;
+				}
+
+				case 'editColumn': {
+					try {
+						const originalName: string = message.originalColumnName || message.columnName;
+						const newName: string = message.columnName;
+						if (!originalName || !newName) {
+							throw new Error('Missing column name(s)');
+						}
+
+						let colName = originalName;
+
+						// 1) Rename column (if changed)
+						if (newName !== originalName) {
+							await queryExecutor.executeQuery(
+								`ALTER TABLE "${schema}"."${objectName}" RENAME COLUMN "${originalName}" TO "${newName}"`
+							);
+							colName = newName;
+						}
+
+						// 2) Type
+						if (message.columnType) {
+							await queryExecutor.executeQuery(
+								`ALTER TABLE "${schema}"."${objectName}" ALTER COLUMN "${colName}" TYPE ${message.columnType}`
+							);
+						}
+
+						// 3) NOT NULL
+						if (message.notNull) {
+							await queryExecutor.executeQuery(
+								`ALTER TABLE "${schema}"."${objectName}" ALTER COLUMN "${colName}" SET NOT NULL`
+							);
+						} else {
+							await queryExecutor.executeQuery(
+								`ALTER TABLE "${schema}"."${objectName}" ALTER COLUMN "${colName}" DROP NOT NULL`
+							);
+						}
+
+						// 4) DEFAULT
+						if (message.defaultValue) {
+							await queryExecutor.executeQuery(
+								`ALTER TABLE "${schema}"."${objectName}" ALTER COLUMN "${colName}" SET DEFAULT ${message.defaultValue}`
+							);
+						} else {
+							await queryExecutor.executeQuery(
+								`ALTER TABLE "${schema}"."${objectName}" ALTER COLUMN "${colName}" DROP DEFAULT`
+							);
+						}
+
+						// 5) COMMENT
+						if (message.comment !== null && message.comment !== undefined) {
+							await queryExecutor.executeQuery(
+								`COMMENT ON COLUMN "${schema}"."${objectName}"."${colName}" IS '${String(message.comment).replace(/'/g, "''")}'`
+							);
+						} else {
+							await queryExecutor.executeQuery(
+								`COMMENT ON COLUMN "${schema}"."${objectName}"."${colName}" IS NULL`
+							);
+						}
+
+						vscode.window.showInformationMessage(`Column "${colName}" updated`);
+						this._refresh(context, panelKey, schema, objectName, objectType, queryExecutor, connectionManager, resultsViewProvider);
+					} catch (err) {
+						vscode.window.showErrorMessage(`Failed to update column: ${err}`);
 					}
 					break;
 				}
@@ -401,14 +512,41 @@ html,body{width:100%;height:100%;font-family:var(--vscode-font-family);
 .badge{font-size:11px;opacity:.55;background:var(--vscode-badge-background);
 	color:var(--vscode-badge-foreground);padding:1px 7px;border-radius:10px}
 .content{flex:1;overflow:hidden;display:flex;flex-direction:column}
-#monacoEditor{flex:1}
+#ddlEditor{flex:1}
+.tabs{display:flex;background:var(--vscode-editorGroupHeader-tabsBackground);
+	border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0;padding:0 4px}
+.tab{padding:6px 14px;font-size:12px;font-weight:500;cursor:pointer;
+	border-bottom:2px solid transparent;color:var(--vscode-foreground);opacity:.65;user-select:none}
+.tab.active{opacity:1;border-bottom-color:var(--vscode-focusBorder);color:var(--vscode-textLink-foreground)}
+.tab-pane{display:none;flex:1;overflow:hidden;flex-direction:column}
+.tab-pane.active{display:flex}
+.toolbar{display:flex;align-items:center;gap:8px;padding:4px 10px;
+	background:var(--vscode-editorGroupHeader-tabsBackground);
+	border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;
+	background:var(--vscode-button-background);color:var(--vscode-button-foreground);
+	border:none;border-radius:2px;font-family:inherit;font-size:11px;cursor:pointer;height:24px}
+.btn:hover:not(:disabled){background:var(--vscode-button-hoverBackground)}
+.btn:disabled{opacity:.35;cursor:default}
+.state{font-size:11px;opacity:.6}
 </style></head><body>
 <div class="header">
 	<span class="header-title">${esc(name)}</span>
 	<span class="badge">${esc(typeLabel)}</span>
 	<span class="badge">schema: ${esc(schema)}</span>
 </div>
-<div class="content"><div id="monacoEditor"></div></div>
+<div class="content">
+	<div class="tabs">
+		<div class="tab active" data-tab="ddl">DDL</div>
+	</div>
+	<div class="tab-pane active" id="ddl-pane">
+		<div class="toolbar">
+			<button class="btn" id="editSaveBtn">✎ Edit</button>
+			<span class="state" id="dirtyState">Saved</span>
+		</div>
+		<div id="ddlEditor"></div>
+	</div>
+</div>
 <script>
 require.config({paths:{vs:'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs'}});
 require(['vs/editor/editor.main'],function(){
@@ -445,22 +583,83 @@ require(['vs/editor/editor.main'],function(){
 	}
 
 	applyTheme();
-	const editor = monaco.editor.create(document.getElementById('monacoEditor'),{
-		value:${JSON.stringify(ddl)},
-		language:'sql',
-		theme:'vsc-match',
-		readOnly:true,
+	const vscode = acquireVsCodeApi();
+
+	const editSaveBtn = document.getElementById('editSaveBtn');
+	const dirtyState = document.getElementById('dirtyState');
+	const editorHost = document.getElementById('ddlEditor');
+
+	let diffEditor = null;
+	let modifiedEditor = null;
+	let isEditMode = false;
+	const originalText = ${JSON.stringify(ddl)};
+
+	const fontFamily = getVar('--vscode-editor-font-family') || 'Consolas, monospace';
+
+	const originalModel = monaco.editor.createModel(originalText, 'sql');
+	const modifiedModel = monaco.editor.createModel(originalText, 'sql');
+
+	diffEditor = monaco.editor.createDiffEditor(editorHost,{
+		automaticLayout:true,
 		minimap:{enabled:false},
 		fontSize:13,
-		fontFamily:getVar('--vscode-editor-font-family') || 'Consolas, monospace',
-		automaticLayout:true,
-		scrollBeyondLastLine:false,
+		fontFamily,
 		wordWrap:'on',
 		tabSize:2,
-		renderWhitespace:'none',
 		lineNumbers:'on',
+		renderWhitespace:'none',
+		scrollBeyondLastLine:false,
+		renderSideBySide:true,
 	});
+	diffEditor.setModel({original: originalModel, modified: modifiedModel});
+
+	const originalEd = diffEditor.getOriginalEditor();
+	modifiedEditor = diffEditor.getModifiedEditor();
+
+	originalEd.updateOptions({ readOnly: true });
+	modifiedEditor.updateOptions({ readOnly: true });
+
+	function refreshDirty(){
+		const val = modifiedEditor.getValue();
+		const dirty = val !== originalText;
+		if(!isEditMode){
+			dirtyState.textContent = dirty ? 'Modified' : 'Saved';
+			editSaveBtn.textContent = '✎ Edit';
+			editSaveBtn.disabled = false;
+			return;
+		}
+		dirtyState.textContent = dirty ? 'Modified' : 'Saved';
+		editSaveBtn.textContent = dirty ? '▶ Execute' : '▶ Execute (no changes)';
+		editSaveBtn.disabled = !dirty;
+	}
+
+	modifiedEditor.onDidChangeModelContent(()=>refreshDirty());
+	refreshDirty();
+
+	editSaveBtn.addEventListener('click',()=>{
+		if(!diffEditor || !modifiedEditor){ return; }
+
+		if(!isEditMode){
+			isEditMode = true;
+			modifiedEditor.updateOptions({ readOnly: false });
+			refreshDirty();
+			return;
+		}
+
+		const ddlToExecute = modifiedEditor.getValue();
+		const ok = confirm('Execute DDL and recreate this routine?\\n\\nThe changes will apply immediately.');
+		if(!ok){ return; }
+		editSaveBtn.disabled = true;
+		vscode.postMessage({ command:'executeRoutineDDL', ddl: ddlToExecute });
+	});
+
 	new MutationObserver(applyTheme).observe(document.body,{attributes:true,attributeFilter:['class']});
+	diffEditor.layout();
+	document.querySelectorAll('.tab').forEach(tab=>{
+		tab.addEventListener('click',()=>{
+			setTimeout(()=>diffEditor && diffEditor.layout(),30);
+		});
+	});
 });
 </script></body></html>`;
 	}
@@ -491,16 +690,17 @@ require(['vs/editor/editor.main'],function(){
 				: '—';
 
 			const ft = this._formatType(col.col_type);
-			return `<tr data-col-name="${esc(col.col)}">
+			return `<tr data-col-name="${esc(col.col)}"
+				data-col-type="${esc(col.col_type)}"
+				data-col-default="${esc(col.col_default ?? '')}"
+				data-col-comment="${esc(col.col_comment ?? '')}"
+				data-col-notnull="${col.notnull ? '1' : '0'}">
 				<td class="mono col-name">${esc(col.col)}</td>
 				<td class="mono"><span class="type-badge ${ft.class}">${ft.display}</span></td>
 				<td>${badges.join(' ')}</td>
 				<td class="mono small">${col.col_default ? esc(col.col_default) : '<span class="dim">—</span>'}</td>
 				<td class="mono small">${fkRef}</td>
 				<td class="comment">${col.col_comment ? esc(col.col_comment) : '<span class="dim">—</span>'}</td>
-				<td class="act-cell">
-					<button class="btn-inline-del" data-col="${esc(col.col)}" title="Delete column">✕</button>
-				</td>
 			</tr>`;
 		}).join('');
 
@@ -729,14 +929,14 @@ tr:hover td{background:var(--vscode-list-hoverBackground)}
 	<div class="toolbar">
 		<button class="btn-act" id="addColBtn" title="Add column">+</button>
 		<button class="btn-act danger" id="deleteColBtn" disabled title="Delete selected">−</button>
-		<button class="btn-act" id="editColBtn" disabled title="Rename selected">✎</button>
+		<button class="btn-act" id="editColBtn" disabled title="Edit selected">✎</button>
 		<div class="sw"><span class="si">⌕</span>
 			<input class="sinput" id="colSearch" placeholder="Filter columns…" autocomplete="off">
 		</div>
 	</div>
 	<div class="tscroll">
 		<table><thead><tr>
-			<th>Column</th><th>Type</th><th>Flags</th><th>Default</th><th>References</th><th>Comment</th><th style="width:36px"></th>
+			<th>Column</th><th>Type</th><th>Flags</th><th>Default</th><th>References</th><th>Comment</th>
 		</tr></thead>
 		<tbody id="colBody">${columnsTabHtml}</tbody></table>
 	</div>
@@ -806,7 +1006,7 @@ tr:hover td{background:var(--vscode-list-hoverBackground)}
 <!-- Add column modal -->
 <div id="addModal" class="modal-ov" style="display:none">
 	<div class="modal">
-		<div class="modal-hd"><span class="modal-title">Add Column</span><button class="modal-x" id="closeModal">&times;</button></div>
+		<div class="modal-hd"><span class="modal-title" id="modalTitle">Add Column</span><button class="modal-x" id="closeModal">&times;</button></div>
 		<div class="modal-bd">
 			<div class="fg"><label>Column Name</label><input type="text" id="nc-name" class="fi" placeholder="column_name"></div>
 			<div class="fg"><label>Data Type</label>
@@ -910,25 +1110,37 @@ document.getElementById('colSearch').addEventListener('input',e=>{
 
 // ── Column row selection ──────────────────────────────────────
 let selCol = null;
+let selColMeta = null;
+
+let modalMode = 'add'; // 'add' | 'edit'
+let editOriginalColumnName = null;
 
 // Single delegated handler for colBody — avoids double-registration bugs
 document.getElementById('colBody').addEventListener('click',function(e){
-	// ── Inline delete button ──
-	const delBtn = e.target.closest('.btn-inline-del');
-	if(delBtn){
-		e.stopPropagation();
-		const col = delBtn.getAttribute('data-col');
-		if(col && confirm('Delete column "'+col+'"?\\n\\nAll data in this column will be lost.')){
-			vscode.postMessage({command:'deleteColumn',columnName:col});
-		}
-		return;
-	}
+	const target = e.target instanceof Element ? e.target : e.target.parentElement;
 	// ── Row selection ──
-	const row = e.target.closest('tr[data-col-name]');
+	const row = target ? target.closest('tr[data-col-name]') : null;
 	if(!row){ return; }
 	document.querySelectorAll('#colBody tr').forEach(r=>r.classList.remove('sel'));
 	row.classList.add('sel');
-	selCol = row.getAttribute('data-col-name');
+
+	// data-* values are HTML-escaped when rendered; decode back so SQL identifiers stay correct
+	function decodeHtmlAttr(v){
+		if(v === null || v === undefined){ return null; }
+		const ta = document.createElement('textarea');
+		ta.innerHTML = String(v);
+		return ta.value;
+	}
+
+	selCol = decodeHtmlAttr(row.getAttribute('data-col-name'));
+	const defVal = decodeHtmlAttr(row.getAttribute('data-col-default'));
+	const commentVal = decodeHtmlAttr(row.getAttribute('data-col-comment'));
+	selColMeta = {
+		colType: decodeHtmlAttr(row.getAttribute('data-col-type')) || '',
+		notNull: row.getAttribute('data-col-notnull') === '1',
+		defaultValue: defVal ? defVal : null,
+		comment: commentVal ? commentVal : null,
+	};
 	document.getElementById('deleteColBtn').disabled = false;
 	document.getElementById('editColBtn').disabled   = false;
 });
@@ -939,22 +1151,72 @@ document.getElementById('deleteColBtn').addEventListener('click',function(){
 		vscode.postMessage({command:'deleteColumn',columnName:selCol});
 	}
 	selCol=null;
+	selColMeta=null;
 	this.disabled=true;
 	document.getElementById('editColBtn').disabled=true;
 });
 
 document.getElementById('editColBtn').addEventListener('click',function(){
 	if(!selCol){ return; }
-	// Rename goes through extension host (can't use vscode.window in webview)
-	vscode.postMessage({command:'promptRenameColumn',columnName:selCol});
+	if(!selColMeta){ return; }
+
+	modalMode = 'edit';
+	editOriginalColumnName = selCol;
+	document.getElementById('modalTitle').textContent = 'Edit Column';
+	document.getElementById('confirmModal').textContent = 'Save Changes';
+
+	document.getElementById('addModal').style.display='flex';
+
+	// Fill inputs from selected row metadata
+	document.getElementById('nc-name').value = selCol;
+	const typeSelect = document.getElementById('nc-type');
+	const colType = selColMeta.colType || '';
+	let hasOption = false;
+	for(const opt of typeSelect.options){
+		if(opt.value === colType){ hasOption = true; break; }
+	}
+	if(!hasOption){
+		const opt = document.createElement('option');
+		opt.value = colType;
+		opt.textContent = colType;
+		typeSelect.appendChild(opt);
+	}
+	typeSelect.value = colType;
+
+	document.getElementById('nc-notnull').checked = !!selColMeta.notNull;
+	document.getElementById('nc-default').value = selColMeta.defaultValue ?? '';
+	document.getElementById('nc-comment').value = selColMeta.comment ?? '';
+
+	document.getElementById('nc-name').focus();
 });
 
 // ── Add column modal ──────────────────────────────────────────
 document.getElementById('addColBtn').onclick=()=>{
-	document.getElementById('addModal').style.display='flex';
+	modalMode = 'add';
+	editOriginalColumnName = null;
+	document.getElementById('modalTitle').textContent = 'Add Column';
+	document.getElementById('confirmModal').textContent = 'Add Column';
+
+	const modal = document.getElementById('addModal');
+	modal.style.display='flex';
+
+	// Clear inputs
+	document.getElementById('nc-name').value='';
+	document.getElementById('nc-default').value='';
+	document.getElementById('nc-comment').value='';
+	document.getElementById('nc-notnull').checked=false;
+	const typeSelect = document.getElementById('nc-type');
+	if(typeSelect && typeSelect.options && typeSelect.options.length){
+		typeSelect.value = typeSelect.options[0].value;
+	}
+
 	document.getElementById('nc-name').focus();
 };
-function closeModal(){document.getElementById('addModal').style.display='none';}
+function closeModal(){
+	document.getElementById('addModal').style.display='none';
+	modalMode = 'add';
+	editOriginalColumnName = null;
+}
 document.getElementById('closeModal').onclick=closeModal;
 document.getElementById('cancelModal').onclick=closeModal;
 document.getElementById('addModal').addEventListener('click',e=>{if(e.target.id==='addModal')closeModal();});
@@ -962,14 +1224,36 @@ document.getElementById('confirmModal').onclick=()=>{
 	const name = document.getElementById('nc-name').value.trim();
 	if(!name){alert('Please enter a column name.');return;}
 	if(!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)){alert('Invalid identifier.');return;}
-	vscode.postMessage({
-		command:'createColumn',
-		columnName:name,
-		columnType:document.getElementById('nc-type').value,
-		notNull:document.getElementById('nc-notnull').checked,
-		defaultValue:document.getElementById('nc-default').value.trim()||null,
-		comment:document.getElementById('nc-comment').value.trim()||null,
-	});
+
+	const columnType = document.getElementById('nc-type').value;
+	const defaultValue = document.getElementById('nc-default').value.trim()||null;
+	const comment = document.getElementById('nc-comment').value.trim()||null;
+
+	if(modalMode==='add'){
+		vscode.postMessage({
+			command:'createColumn',
+			columnName:name,
+			columnType,
+			notNull:document.getElementById('nc-notnull').checked,
+			defaultValue,
+			comment,
+		});
+	}else{
+		if(!editOriginalColumnName){
+			alert('Column to edit is not selected.');
+			return;
+		}
+		vscode.postMessage({
+			command:'editColumn',
+			originalColumnName: editOriginalColumnName,
+			columnName:name,
+			columnType,
+			notNull:document.getElementById('nc-notnull').checked,
+			defaultValue,
+			comment,
+		});
+	}
+
 	closeModal();
 	document.getElementById('nc-name').value='';
 	document.getElementById('nc-default').value='';
