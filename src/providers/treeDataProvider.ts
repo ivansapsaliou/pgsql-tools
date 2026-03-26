@@ -4,6 +4,7 @@ import { QueryExecutor } from '../database/queryExecutor';
 
 export type NodeKind =
 	| 'connection'
+	| 'connection_disconnected'
 	| 'connection_active'
 	| 'connection_group'
 	| 'schema'
@@ -68,6 +69,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 
 		const iconMap: Record<NodeKind, string> = {
 			connection: 'database',
+			connection_disconnected: 'circle-outline',
 			connection_active: 'database',
 			connection_group: 'server-environment',
 			schema: 'folder',
@@ -95,12 +97,12 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 		if (element.contextValue) {
 			item.iconPath = new vscode.ThemeIcon(iconMap[element.contextValue] ?? 'circle-outline');
 		}
+		if (element.contextValue === 'connection_disconnected') {
+			item.description = '(disconnected)';
+		}
 
 		// Active connection bullet
-		if (
-			element.contextValue === 'connection' &&
-			element.label === this.connectionManager.getActiveConnectionName()
-		) {
+		if (element.contextValue === 'connection' && element.label === this.connectionManager.getActiveConnectionName()) {
 			item.label = `● ${element.label}`;
 			item.description = '(active)';
 			item.iconPath = new vscode.ThemeIcon('database', new vscode.ThemeColor('terminal.ansiGreen'));
@@ -117,7 +119,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 	async getChildren(element?: TreeNode): Promise<TreeNode[]> {
 		// ── Root: list all connections ────────────────────────────────────────
 		if (!element) {
-			const connections = this.connectionManager.getConnections();
+			const connections = this.connectionManager.getSavedConnectionNames();
 			if (connections.length === 0) {
 				return [
 					new TreeNode(
@@ -127,21 +129,23 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 					),
 				];
 			}
-			return connections.map(
-				(name) =>
-					new TreeNode(
-						name,
-						vscode.TreeItemCollapsibleState.Collapsed,
-						'connection',
-						undefined,
-						undefined,
-						name
-					)
-			);
+			return connections.map((name) => {
+				const isConnected = this.connectionManager.isConnected(name);
+				return new TreeNode(
+					name,
+					isConnected
+						? vscode.TreeItemCollapsibleState.Collapsed
+						: vscode.TreeItemCollapsibleState.None,
+					isConnected ? 'connection' : 'connection_disconnected',
+					undefined,
+					undefined,
+					name
+				);
+			});
 		}
 
 		// ── Connection: list schemas ──────────────────────────────────────────
-		if (element.contextValue === 'connection') {
+		if (element.contextValue === 'connection' || element.contextValue === 'connection_disconnected') {
 			const connName = element.connectionName ?? element.label.replace(/^● /, '');
 			const client = this.connectionManager.getConnectionByName(connName);
 			if (!client) {
@@ -206,7 +210,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 					return res.rows.map((r) => {
 						return new TreeNode(
 							r.table_name,
-							vscode.TreeItemCollapsibleState.None,
+							vscode.TreeItemCollapsibleState.Collapsed,
 							'table',
 							schema,
 							r.table_name,
@@ -223,7 +227,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 					return res.rows.map((r) => {
 						return new TreeNode(
 							r.table_name,
-							vscode.TreeItemCollapsibleState.None,
+							vscode.TreeItemCollapsibleState.Collapsed,
 							'view',
 							schema,
 							r.table_name,

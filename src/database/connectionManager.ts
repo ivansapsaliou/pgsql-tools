@@ -13,6 +13,13 @@ export interface ConnectionConfig {
 	ssh?: SshConfig;
 }
 
+export interface ConnectionDisplayInfo {
+	name: string;
+	host: string;
+	port: number;
+	database: string;
+}
+
 // Хранится без паролей — пароли в SecretStorage
 interface SavedConnection {
 	name: string;
@@ -126,9 +133,7 @@ export class ConnectionManager {
 				});
 
 				this.connections.set(conn.name, { client, tunnel });
-				if (!this.activeConnection) {
-					this.activeConnection = conn.name;
-				}
+				// Важно: при старте расширения не выбираем активное подключение автоматически.
 			} catch (err) {
 				console.warn(`Could not restore connection "${conn.name}":`, err);
 			}
@@ -146,6 +151,10 @@ export class ConnectionManager {
 		return this.connections.get(name)?.client ?? null;
 	}
 
+	isConnected(name: string): boolean {
+		return this.connections.has(name);
+	}
+
 	setActiveConnection(name: string): void {
 		if (this.connections.has(name)) {
 			this.activeConnection = name;
@@ -160,8 +169,85 @@ export class ConnectionManager {
 		return this.getSavedList().map((c) => c.name);
 	}
 
+	async connectSavedConnection(name: string): Promise<boolean> {
+		if (this.connections.has(name)) {
+			this.activeConnection = name;
+			return true;
+		}
+
+		const saved = this.getSavedList().find((c) => c.name === name);
+		if (!saved) {
+			vscode.window.showErrorMessage(`Connection "${name}" not found`);
+			return false;
+		}
+
+		const password = await this.loadPassword(name);
+		if (password === undefined) {
+			vscode.window.showErrorMessage(`Password for "${name}" not found in secure storage`);
+			return false;
+		}
+
+		const sshPassword = saved.ssh ? await this.loadSshPassword(name) : undefined;
+		const sshPassphrase = saved.ssh ? await this.loadSshPassphrase(name) : undefined;
+
+		try {
+			let host = saved.host;
+			let port = saved.port;
+			let tunnel: TunnelInfo | undefined;
+
+			if (saved.ssh) {
+				const sshCfg: SshConfig = {
+					...saved.ssh,
+					password: sshPassword,
+					passphrase: sshPassphrase,
+				};
+				tunnel = await openSshTunnel(sshCfg, saved.host, saved.port);
+				host = '127.0.0.1';
+				port = tunnel.localPort;
+			}
+
+			const client = new pg.Client({
+				host,
+				port,
+				database: saved.database,
+				user: saved.user,
+				password,
+			});
+
+			await client.connect();
+
+			client.on('error', (err) => {
+				console.error(`Connection "${saved.name}" error:`, err.message);
+				this.removeActiveEntry(saved.name);
+			});
+
+			this.connections.set(saved.name, { client, tunnel });
+			this.activeConnection = saved.name;
+			return true;
+		} catch (error) {
+			vscode.window.showErrorMessage(`Connection failed: ${error}`);
+			return false;
+		}
+	}
+
+	async disconnect(name: string): Promise<void> {
+		await this.removeActiveEntry(name);
+	}
+
 	getActiveConnectionName(): string | null {
 		return this.activeConnection;
+	}
+
+	getActiveConnectionDisplayInfo(): ConnectionDisplayInfo | null {
+		if (!this.activeConnection) return null;
+		const saved = this.getSavedList().find((c) => c.name === this.activeConnection);
+		if (!saved) return null;
+		return {
+			name: saved.name,
+			host: saved.host,
+			port: saved.port,
+			database: saved.database,
+		};
 	}
 
 	async closeAllConnections(): Promise<void> {
@@ -183,7 +269,8 @@ export class ConnectionManager {
 			this.connections.delete(name);
 		}
 		if (this.activeConnection === name) {
-			this.activeConnection = this.connections.keys().next().value ?? null;
+			// Не переключаемся автоматически на “следующее” подключение.
+			this.activeConnection = null;
 		}
 	}
 

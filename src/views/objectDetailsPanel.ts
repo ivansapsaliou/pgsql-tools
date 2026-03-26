@@ -8,6 +8,10 @@ function esc(text: string): string {
 	return text.replace(/[&<>"']/g, (m) => map[m]);
 }
 
+function qIdent(name: string): string {
+	return `"${String(name).replace(/"/g, '""')}"`;
+}
+
 interface ColumnDetail {
 	col: string;
 	col_type: string;
@@ -147,14 +151,14 @@ export class ObjectDetailsPanel {
 					try {
 						const pageSize = message.limit || 1000;
 						const offset = (message.page - 1) * pageSize;
-						const orderBy = message.orderBy ? ` ORDER BY "${message.orderBy}" ${message.orderDir || 'ASC'}` : '';
+						const orderBy = message.orderBy ? ` ORDER BY ${qIdent(message.orderBy)} ${message.orderDir || 'ASC'}` : '';
 						const result = await queryExecutor.executeQuery(
-							`SELECT * FROM "${schema}"."${objectName}"${orderBy} LIMIT ${pageSize} OFFSET ${offset}`
+							`SELECT ctid::text AS "__pgtools_ctid", * FROM ${qIdent(schema)}.${qIdent(objectName)}${orderBy} LIMIT ${pageSize} OFFSET ${offset}`
 						);
 						panel.webview.postMessage({
 							command: 'pageData',
 							rows: result.rows,
-							fields: result.fields?.map((f: any) => f.name) || [],
+							fields: (result.fields?.map((f: any) => f.name) || []).filter((n: string) => n !== '__pgtools_ctid'),
 							page: message.page,
 							orderBy: message.orderBy || null,
 							orderDir: message.orderDir || null,
@@ -168,16 +172,31 @@ export class ObjectDetailsPanel {
 				// ── Apply row edits (from Data tab) ─────────────────────────
 				case 'applyRowChanges': {
 					try {
-						const changes: Array<{ pkCol: string; pkVal: any; col: string; val: any }> = message.changes;
+						const changes: Array<{ pkCol: string; pkVal: any; rowCtid?: string; col: string; val: any }> = message.changes;
 						if (!changes || changes.length === 0) {
 							vscode.window.showInformationMessage('No changes to apply');
 							break;
 						}
 						for (const ch of changes) {
 							const escapedVal = ch.val === null ? 'NULL' : `'${String(ch.val).replace(/'/g, "''")}'`;
+							const colSql = qIdent(ch.col);
+							const tableSql = `${qIdent(schema)}.${qIdent(objectName)}`;
+							if (ch.rowCtid) {
+								const escapedTid = `'${String(ch.rowCtid).replace(/'/g, "''")}'::tid`;
+								await queryExecutor.executeQuery(
+									`UPDATE ${tableSql} SET ${colSql} = ${escapedVal} WHERE ctid = ${escapedTid}`
+								);
+								continue;
+							}
+							if (!ch.pkCol) {
+								throw new Error('Cannot apply changes: primary key is missing and row identifier is not provided');
+							}
+							const pkColSql = qIdent(ch.pkCol);
 							const escapedPk  = ch.pkVal === null ? 'NULL' : `'${String(ch.pkVal).replace(/'/g, "''")}'`;
 							await queryExecutor.executeQuery(
-								`UPDATE "${schema}"."${objectName}" SET "${ch.col}" = ${escapedVal} WHERE "${ch.pkCol}" = ${escapedPk}`
+								ch.pkVal === null
+									? `UPDATE ${tableSql} SET ${colSql} = ${escapedVal} WHERE ${pkColSql} IS NULL`
+									: `UPDATE ${tableSql} SET ${colSql} = ${escapedVal} WHERE ${pkColSql} = ${escapedPk}`
 							);
 						}
 						panel.webview.postMessage({ command: 'rowChangesApplied' });
@@ -185,6 +204,178 @@ export class ObjectDetailsPanel {
 					} catch (err) {
 						vscode.window.showErrorMessage(`Failed to save changes: ${err}`);
 						panel.webview.postMessage({ command: 'rowChangesFailed', error: String(err) });
+						await this._showDataTabErrorInResults(
+							resultsViewProvider,
+							'Apply row changes failed',
+							err,
+							{ schema, table: objectName, operation: 'applyRowChanges', changesCount: message?.changes?.length ?? 0 }
+						);
+					}
+					break;
+				}
+
+				case '__deleteRowsButtonClicked': {
+					vscode.window.showInformationMessage(`Data: deleteRows button clicked (${objectType})`);
+					break;
+				}
+
+				case 'applyTableRowEdits': {
+					try {
+						if (objectType !== 'table') {
+							throw new Error('Row inserts/updates are supported only for tables');
+						}
+
+						const updates: Array<{ pkCol: string; pkVal: any; rowCtid?: string | null; col: string; val: any }> =
+							Array.isArray(message.updates) ? message.updates : [];
+
+						const inserts: Array<{ values: Record<string, any> }> =
+							Array.isArray(message.inserts) ? message.inserts : [];
+
+						// 1) INSERTs (new local rows)
+						let insertOpCount = 0;
+						for (const ins of inserts) {
+							const values: Record<string, any> =
+								ins && typeof ins.values === 'object' && ins.values !== null ? ins.values : {};
+
+							const columns = Object.keys(values)
+								.filter((c) => c && c !== '__pgtools_ctid' && values[c] !== undefined);
+
+							const tableSql = `${qIdent(schema)}.${qIdent(objectName)}`;
+							if (columns.length === 0) {
+								await queryExecutor.executeQuery(`INSERT INTO ${tableSql} DEFAULT VALUES`);
+							} else {
+								const colSql = columns.map((c) => qIdent(c)).join(', ');
+								const valSql = columns.map((c) => this._toSqlLiteral(values[c])).join(', ');
+								await queryExecutor.executeQuery(`INSERT INTO ${tableSql} (${colSql}) VALUES (${valSql})`);
+							}
+							insertOpCount++;
+						}
+
+						// 2) UPDATEs (cell edits for existing rows)
+						let updateOpCount = 0;
+						for (const ch of updates) {
+							const escapedVal =
+								ch.val === null || ch.val === undefined
+									? 'NULL'
+									: `'${String(ch.val).replace(/'/g, "''")}'`;
+
+							const colSql = qIdent(ch.col);
+							const tableSql = `${qIdent(schema)}.${qIdent(objectName)}`;
+
+							if (ch.rowCtid) {
+								const escapedTid = `'${String(ch.rowCtid).replace(/'/g, "''")}'::tid`;
+								await queryExecutor.executeQuery(
+									`UPDATE ${tableSql} SET ${colSql} = ${escapedVal} WHERE ctid = ${escapedTid}`
+								);
+								updateOpCount++;
+								continue;
+							}
+
+							if (!ch.pkCol) {
+								throw new Error('Cannot apply update: primary key is missing and row identifier is not provided');
+							}
+
+							const pkColSql = qIdent(ch.pkCol);
+							const escapedPk =
+								ch.pkVal === null || ch.pkVal === undefined
+									? 'NULL'
+									: `'${String(ch.pkVal).replace(/'/g, "''")}'`;
+
+							await queryExecutor.executeQuery(
+								ch.pkVal === null || ch.pkVal === undefined
+									? `UPDATE ${tableSql} SET ${colSql} = ${escapedVal} WHERE ${pkColSql} IS NULL`
+									: `UPDATE ${tableSql} SET ${colSql} = ${escapedVal} WHERE ${pkColSql} = ${escapedPk}`
+							);
+							updateOpCount++;
+						}
+
+						panel.webview.postMessage({ command: 'tableRowEditsApplied', inserted: insertOpCount, updated: updateOpCount });
+						vscode.window.showInformationMessage(`✓ Saved table edits (inserted ${insertOpCount} row(s), updated ${updateOpCount} cell(s))`);
+					} catch (err) {
+						const errText = `Failed to apply table row edits: ${err}`;
+						vscode.window.showErrorMessage(errText);
+						panel.webview.postMessage({ command: 'tableRowEditsFailed', error: errText });
+						await this._showDataTabErrorInResults(
+							resultsViewProvider,
+							'Apply table row edits failed',
+							err,
+							{ schema, table: objectName, operation: 'applyTableRowEdits', updatesCount: Array.isArray(message?.updates) ? message.updates.length : 0, insertsCount: Array.isArray(message?.inserts) ? message.inserts.length : 0 }
+						);
+					}
+					break;
+				}
+
+				case 'deleteRows': {
+					try {
+						if (objectType !== 'table') {
+							throw new Error('Row deletion is supported only for tables');
+						}
+						vscode.window.showInformationMessage(`✓ Deleted btn`);
+						const rows: Array<{ pkCol: string; pkVal: any; rowCtid?: string | null }> = Array.isArray(message.rows) ? message.rows : [];
+						if (rows.length === 0) {
+							throw new Error('No rows selected for deletion');
+						}
+						const tableSql = `${qIdent(schema)}.${qIdent(objectName)}`;
+						let deleted = 0;
+						for (const row of rows) {
+							if (row.rowCtid) {
+								const escapedTid = `'${String(row.rowCtid).replace(/'/g, "''")}'::tid`;
+								await queryExecutor.executeQuery(`DELETE FROM ${tableSql} WHERE ctid = ${escapedTid}`);
+								deleted++;
+								continue;
+							}
+							if (!row.pkCol) {
+								throw new Error('Cannot delete rows: primary key is missing and row identifier is not provided');
+							}
+							const pkColSql = qIdent(row.pkCol);
+							const escapedPk = row.pkVal === null ? 'NULL' : `'${String(row.pkVal).replace(/'/g, "''")}'`;
+							await queryExecutor.executeQuery(
+								row.pkVal === null
+									? `DELETE FROM ${tableSql} WHERE ${pkColSql} IS NULL`
+									: `DELETE FROM ${tableSql} WHERE ${pkColSql} = ${escapedPk}`
+							);
+							deleted++;
+						}
+						panel.webview.postMessage({ command: 'rowsDeleted', deleted });
+						vscode.window.showInformationMessage(`✓ ${deleted} row(s) deleted`);
+					} catch (err) {
+						const errText = `Failed to delete rows: ${err}`;
+						vscode.window.showErrorMessage(errText);
+						panel.webview.postMessage({ command: 'deleteRowsFailed', error: errText });
+						await this._showDataTabErrorInResults(
+							resultsViewProvider,
+							'Delete rows failed',
+							err,
+							{ schema, table: objectName, operation: 'deleteRows', requestedRows: message?.rows?.length ?? 0 }
+						);
+					}
+					break;
+				}
+
+				case 'createRow': {
+					try {
+						const values = (message && typeof message.values === 'object' && message.values !== null) ? message.values as Record<string, any> : {};
+						const columns = Object.keys(values).filter((c) => c && c !== '__pgtools_ctid');
+						const tableSql = `${qIdent(schema)}.${qIdent(objectName)}`;
+						if (columns.length === 0) {
+							await queryExecutor.executeQuery(`INSERT INTO ${tableSql} DEFAULT VALUES`);
+						} else {
+							const colSql = columns.map((c) => qIdent(c)).join(', ');
+							const valSql = columns.map((c) => this._toSqlLiteral(values[c])).join(', ');
+							await queryExecutor.executeQuery(`INSERT INTO ${tableSql} (${colSql}) VALUES (${valSql})`);
+						}
+						panel.webview.postMessage({ command: 'rowCreated' });
+						vscode.window.showInformationMessage('✓ New row created');
+					} catch (err) {
+						const errText = `Failed to create row: ${err}`;
+						vscode.window.showErrorMessage(errText);
+						panel.webview.postMessage({ command: 'createRowFailed', error: errText });
+						await this._showDataTabErrorInResults(
+							resultsViewProvider,
+							'Create row failed',
+							err,
+							{ schema, table: objectName, operation: 'createRow' }
+						);
 					}
 					break;
 				}
@@ -232,17 +423,53 @@ export class ObjectDetailsPanel {
 				}
 
 				// ── FIX: delete column — always use CASCADE, single query ────
-				case 'deleteColumn': {
-					const colName: string = message.columnName;
+				case 'deleteColumnClicked': {
+					const rawColName: string = String(message.columnName ?? '');
+					const colName = rawColName.trim();
 					if (!colName) { break; }
 					try {
+						if (objectType !== 'table') {
+							throw new Error('Column deletion is supported only for tables');
+						}
+						const e = (s: string) => s.replace(/'/g, "''");
+						const lookup = await queryExecutor.executeQuery(`
+							SELECT a.attname AS col
+							FROM pg_catalog.pg_attribute a
+							JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+							JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+							WHERE n.nspname = '${e(schema)}'
+							  AND c.relname = '${e(objectName)}'
+							  AND a.attnum > 0
+							  AND NOT a.attisdropped
+							  AND lower(a.attname) = lower('${e(colName)}')
+							LIMIT 1
+						`);
+						const actualColName: string = lookup.rows[0]?.col;
+						if (!actualColName) {
+							throw new Error(`Column "${colName}" not found in ${schema}.${objectName}`);
+						}
 						await queryExecutor.executeQuery(
-							`ALTER TABLE "${schema}"."${objectName}" DROP COLUMN IF EXISTS "${colName}" CASCADE`
+							`ALTER TABLE ${qIdent(schema)}.${qIdent(objectName)} DROP COLUMN ${qIdent(actualColName)} CASCADE`
 						);
-						vscode.window.showInformationMessage(`Column "${colName}" deleted`);
+
+						const verify = await queryExecutor.executeQuery(`
+							SELECT 1
+							FROM information_schema.columns
+							WHERE table_schema = '${e(schema)}'
+							  AND table_name = '${e(objectName)}'
+							  AND column_name = '${e(actualColName)}'
+							LIMIT 1
+						`);
+						if ((verify.rowCount || 0) > 0) {
+							throw new Error(`Column "${actualColName}" still exists after DROP COLUMN`);
+						}
+						vscode.window.showInformationMessage(`Column "${actualColName}" deleted`);
+						panel.webview.postMessage({ command: 'deleteColumnApplied', columnName: actualColName });
 						this._refresh(context, panelKey, schema, objectName, objectType, queryExecutor, connectionManager, resultsViewProvider);
 					} catch (err) {
-						vscode.window.showErrorMessage(`Failed to delete column "${colName}": ${err}`);
+						const errMsg = `Failed to delete column "${colName}": ${err}`;
+						vscode.window.showErrorMessage(errMsg);
+						panel.webview.postMessage({ command: 'deleteColumnFailed', error: errMsg, columnName: colName });
 					}
 					break;
 				}
@@ -446,6 +673,36 @@ export class ObjectDetailsPanel {
 		return { display: type, class: cssClass };
 	}
 
+	private static _toSqlLiteral(value: any): string {
+		if (value === null || value === undefined) { return 'NULL'; }
+		if (typeof value === 'number' && Number.isFinite(value)) { return String(value); }
+		if (typeof value === 'boolean') { return value ? 'TRUE' : 'FALSE'; }
+		return `'${String(value).replace(/'/g, "''")}'`;
+	}
+
+	private static async _showDataTabErrorInResults(
+		resultsViewProvider: ResultsViewProvider | undefined,
+		title: string,
+		error: unknown,
+		meta?: Record<string, any>
+	) {
+		if (!resultsViewProvider) { return; }
+		try {
+			const payload = {
+				error: String(error),
+				timestamp: new Date().toISOString(),
+				...(meta || {}),
+			};
+			await resultsViewProvider.showRichContent({
+				type: 'json',
+				title: `Object Details: ${title}`,
+				content: JSON.stringify(payload, null, 2),
+			});
+		} catch {
+			// Ignore secondary failures when reporting errors to Query Results
+		}
+	}
+
 	private static _loadingHtml(title: string, objectType: string): string {
 		return `<!DOCTYPE html><html><head><meta charset="UTF-8">
 		<style>
@@ -494,6 +751,23 @@ html,body{width:100%;height:100%;font-family:var(--vscode-font-family);
 .btn:hover:not(:disabled){background:var(--vscode-button-hoverBackground)}
 .btn:disabled{opacity:.35;cursor:default}
 .state{font-size:11px;opacity:.6}
+.modal-ov{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;
+	align-items:center;justify-content:center;z-index:1000}
+.modal{background:var(--vscode-editor-background);border:1px solid var(--vscode-panel-border);
+	border-radius:4px;min-width:340px;max-width:90%;box-shadow:0 4px 16px rgba(0,0,0,.4)}
+.modal-hd{display:flex;align-items:center;justify-content:space-between;
+	padding:10px 14px;border-bottom:1px solid var(--vscode-panel-border)}
+.modal-title{font-weight:600;font-size:13px}
+.modal-x{background:none;border:none;color:var(--vscode-foreground);cursor:pointer;font-size:18px;opacity:.6}
+.modal-x:hover{opacity:1}
+.modal-bd{padding:14px}
+.modal-ft{display:flex;justify-content:flex-end;gap:8px;padding:10px 14px;
+	border-top:1px solid var(--vscode-panel-border)}
+.btn-cancel{padding:5px 12px;background:var(--vscode-button-secondaryBackground);
+	color:var(--vscode-button-secondaryForeground);border:none;border-radius:2px;cursor:pointer;font-size:12px}
+.btn-ok{padding:5px 12px;background:var(--vscode-button-background);
+	color:var(--vscode-button-foreground);border:none;border-radius:2px;cursor:pointer;font-size:12px}
+.btn-ok:hover{background:var(--vscode-button-hoverBackground)}
 </style></head><body>
 <div class="header">
 	<span class="header-title">${esc(name)}</span>
@@ -510,6 +784,23 @@ html,body{width:100%;height:100%;font-family:var(--vscode-font-family);
 			<span class="state" id="dirtyState">Saved</span>
 		</div>
 		<div id="ddlEditor"></div>
+	</div>
+</div>
+
+<!-- Confirm modal (replaces window.confirm; webviews are sandboxed) -->
+<div id="confirmOv" class="modal-ov" style="display:none">
+	<div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMsg">
+		<div class="modal-hd">
+			<span class="modal-title" id="confirmTitle">Confirm</span>
+			<button class="modal-x" id="confirmClose" aria-label="Close">&times;</button>
+		</div>
+		<div class="modal-bd">
+			<div id="confirmMsg" style="white-space:pre-wrap;line-height:1.35"></div>
+		</div>
+		<div class="modal-ft">
+			<button type="button" class="btn-cancel" id="confirmCancel">Cancel</button>
+			<button type="button" class="btn-ok" id="confirmOk">OK</button>
+		</div>
 	</div>
 </div>
 <script>
@@ -547,6 +838,51 @@ require(['vs/editor/editor.main'],function(){
 
 	applyTheme();
 	const vscode = acquireVsCodeApi();
+
+	function confirmModal(message, opts){
+		const o = opts || {};
+		const ov = document.getElementById('confirmOv');
+		const titleEl = document.getElementById('confirmTitle');
+		const msgEl = document.getElementById('confirmMsg');
+		const okBtn = document.getElementById('confirmOk');
+		const cancelBtn = document.getElementById('confirmCancel');
+		const closeBtn = document.getElementById('confirmClose');
+
+		titleEl.textContent = o.title || 'Confirm';
+		msgEl.textContent = String(message || '');
+		okBtn.textContent = o.okText || 'OK';
+		cancelBtn.textContent = o.cancelText || 'Cancel';
+
+		ov.style.display = 'flex';
+		okBtn.focus();
+
+		return new Promise((resolve)=>{
+			function cleanup(){
+				ov.style.display = 'none';
+				document.removeEventListener('keydown', onKey);
+				ov.removeEventListener('click', onOverlayClick);
+				okBtn.removeEventListener('click', onOk);
+				cancelBtn.removeEventListener('click', onCancel);
+				closeBtn.removeEventListener('click', onCancel);
+			}
+			function finish(val){
+				cleanup();
+				resolve(!!val);
+			}
+			function onOk(){ finish(true); }
+			function onCancel(){ finish(false); }
+			function onOverlayClick(e){ if(e && e.target && e.target.id==='confirmOv'){ finish(false); } }
+			function onKey(e){
+				if(e.key==='Escape'){ finish(false); }
+				if(e.key==='Enter'){ finish(true); }
+			}
+			okBtn.addEventListener('click', onOk);
+			cancelBtn.addEventListener('click', onCancel);
+			closeBtn.addEventListener('click', onCancel);
+			ov.addEventListener('click', onOverlayClick);
+			document.addEventListener('keydown', onKey);
+		});
+	}
 
 	const editSaveBtn = document.getElementById('editSaveBtn');
 	const dirtyState = document.getElementById('dirtyState');
@@ -599,7 +935,7 @@ require(['vs/editor/editor.main'],function(){
 	modifiedEditor.onDidChangeModelContent(()=>refreshDirty());
 	refreshDirty();
 
-	editSaveBtn.addEventListener('click',()=>{
+	editSaveBtn.addEventListener('click', async ()=>{
 		if(!diffEditor || !modifiedEditor){ return; }
 		if(!isEditMode){
 			isEditMode = true;
@@ -608,7 +944,10 @@ require(['vs/editor/editor.main'],function(){
 			return;
 		}
 		const ddlToExecute = modifiedEditor.getValue();
-		const ok = confirm('Execute DDL and recreate this routine?\\n\\nThe changes will apply immediately.');
+		const ok = await confirmModal(
+			'Execute DDL and recreate this routine?\\n\\nThe changes will apply immediately.',
+			{ title:'Execute DDL', okText:'Execute', cancelText:'Cancel' }
+		);
 		if(!ok){ return; }
 		editSaveBtn.disabled = true;
 		vscode.postMessage({ command:'executeRoutineDDL', ddl: ddlToExecute });
@@ -689,20 +1028,32 @@ require(['vs/editor/editor.main'],function(){
 			</tr>`).join('')
 			: `<tr><td colspan="4" class="empty">No ${dir} FK</td></tr>`;
 
-		// ── Constraints tab ──
-		const constraintsHtml = constraints.length
-			? constraints.map(c => `<tr>
+		// ── Keys & Checks tabs ──
+		const keyConstraints = constraints.filter((c) => c.type === 'PRIMARY KEY' || c.type === 'UNIQUE');
+		const checkConstraints = constraints.filter((c) => c.type === 'CHECK');
+
+		const keyConstraintsHtml = keyConstraints.length
+			? keyConstraints.map(c => `<tr>
 				<td class="mono">${esc(c.name)}</td>
-				<td><span class="badge badge--${c.type === 'PRIMARY KEY' ? 'pk' : c.type === 'UNIQUE' ? 'uq' : 'ck'}">${esc(c.type)}</span></td>
+				<td><span class="badge badge--${c.type === 'PRIMARY KEY' ? 'pk' : 'uq'}">${esc(c.type)}</span></td>
 				<td>${esc(c.columns.join(', '))}</td>
 				<td class="mono small">${c.definition ? esc(c.definition) : '—'}</td>
 			</tr>`).join('')
-			: '<tr><td colspan="4" class="empty">No constraints</td></tr>';
+			: '<tr><td colspan="4" class="empty">No keys</td></tr>';
+
+		const checksHtml = checkConstraints.length
+			? checkConstraints.map(c => `<tr>
+				<td class="mono">${esc(c.name)}</td>
+				<td>${esc(c.columns.join(', '))}</td>
+				<td class="mono small">${c.definition ? esc(c.definition) : '—'}</td>
+			</tr>`).join('')
+			: '<tr><td colspan="3" class="empty">No checks</td></tr>';
 
 		// ── Data tab header ──
 		const dataHeaderHtml = fieldNames.map((f, i) =>
 			`<th class="sortable" data-col="${i}" data-colname="${esc(f)}">${esc(f)} <span class="sort-icon"></span></th>`
 		).join('');
+		const allColumnsForInsert = JSON.stringify(fieldNames);
 
 		return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
@@ -712,18 +1063,6 @@ require(['vs/editor/editor.main'],function(){
 html,body{width:100%;height:100%;font-family:var(--vscode-font-family);font-size:var(--vscode-font-size,13px);
 	background:var(--vscode-editor-background);color:var(--vscode-foreground);
 	display:flex;flex-direction:column;overflow:hidden}
-
-.header{display:flex;align-items:center;justify-content:space-between;padding:6px 12px;
-	background:var(--vscode-editorGroupHeader-tabsBackground);
-	border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0;gap:8px}
-.header-left{display:flex;align-items:center;gap:8px}
-.header-title{font-size:13px;font-weight:600}
-.badge-meta{font-size:11px;opacity:.55;background:var(--vscode-badge-background);
-	color:var(--vscode-badge-foreground);padding:1px 7px;border-radius:10px}
-.btn-open{display:flex;align-items:center;gap:4px;padding:3px 10px;
-	background:var(--vscode-button-background);color:var(--vscode-button-foreground);
-	border:none;border-radius:2px;font-family:inherit;font-size:11px;cursor:pointer;height:22px}
-.btn-open:hover{background:var(--vscode-button-hoverBackground)}
 
 .tabs{display:flex;background:var(--vscode-editorGroupHeader-tabsBackground);
 	border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0;padding:0 4px}
@@ -876,22 +1215,13 @@ tr:hover td{background:var(--vscode-list-hoverBackground)}
 .btn-ok:hover{background:var(--vscode-button-hoverBackground)}
 </style></head><body>
 
-<div class="header">
-	<div class="header-left">
-		<span class="header-title">${esc(tableName)}</span>
-		<span class="badge-meta">schema: ${esc(schema)}</span>
-		<span class="badge-meta">${columnDetails.length} columns</span>
-	</div>
-	<button class="btn-open" id="openInResultsBtn">↗ Open in Query Results</button>
-</div>
-
 <div class="tabs">
 	<div class="tab active" data-tab="columns">Columns <span class="tab-count">${columnDetails.length}</span></div>
-	<div class="tab" data-tab="ddl">DDL</div>
-	<div class="tab" data-tab="data">Data</div>
+	<div class="tab" data-tab="keys">Keys <span class="tab-count">${keyConstraints.length + foreignKeys.length}</span></div>
+	<div class="tab" data-tab="checks">Checks <span class="tab-count">${checkConstraints.length}</span></div>
 	<div class="tab" data-tab="indexes">Indexes <span class="tab-count">${indexes.length}</span></div>
-	<div class="tab" data-tab="fk">Foreign Keys <span class="tab-count">${foreignKeys.length}</span></div>
-	<div class="tab" data-tab="constraints">Constraints <span class="tab-count">${constraints.length}</span></div>
+	<div class="tab" data-tab="data">Data</div>
+	<div class="tab" data-tab="ddl">DDL</div>
 </div>
 
 <div class="content">
@@ -919,12 +1249,41 @@ tr:hover td{background:var(--vscode-list-hoverBackground)}
 	<div id="ddlEditor"></div>
 </div>
 
+<!-- ── KEYS ── -->
+<div class="tab-pane" id="keys-pane">
+	<div class="tscroll">
+		<div class="sec-h">Key constraints (PK / UNIQUE)</div>
+		<table>
+			<thead><tr><th>Name</th><th>Type</th><th>Columns</th><th>Definition</th></tr></thead>
+			<tbody>${keyConstraintsHtml}</tbody>
+		</table>
+
+		<div class="sec-h" style="margin-top:1px">Foreign keys</div>
+		<div class="sec-h">Outgoing (this → other)</div>
+		<table><thead><tr><th>Constraint</th><th>Columns</th><th>References</th><th>Ref. Columns</th></tr></thead>
+		<tbody>${fkRows(outgoing, 'outgoing')}</tbody></table>
+		<div class="sec-h" style="margin-top:1px">Incoming (other → this)</div>
+		<table><thead><tr><th>Constraint</th><th>Ref. Columns</th><th>From Table</th><th>Columns</th></tr></thead>
+		<tbody>${fkRows(incoming, 'incoming')}</tbody></table>
+	</div>
+</div>
+
+<!-- ── CHECKS ── -->
+<div class="tab-pane" id="checks-pane">
+	<div class="tscroll"><table>
+		<thead><tr><th>Name</th><th>Columns</th><th>Definition</th></tr></thead>
+		<tbody>${checksHtml}</tbody>
+	</table></div>
+</div>
+
 <!-- ── DATA (with inline editing) ── -->
 <div class="tab-pane" id="data-pane">
 	<div class="toolbar">
 		<div class="sw"><span class="si">⌕</span>
 			<input class="sinput" id="dataSearch" placeholder="Search rows…" autocomplete="off">
 		</div>
+		<button class="btn-inline" id="addRowBtn">+ Row</button>
+		<button class="btn-inline danger" id="deleteRowsBtn" disabled>− Delete</button>
 		<label style="display:flex;align-items:center;gap:4px;font-size:11px;flex-shrink:0">
 			<span style="opacity:.5">Limit:</span>
 			<input type="text" class="sinput" id="dataLimit" value="1000" style="width:60px;text-align:right;padding-left:8px">
@@ -960,26 +1319,6 @@ tr:hover td{background:var(--vscode-list-hoverBackground)}
 	</table></div>
 </div>
 
-<!-- ── FK ── -->
-<div class="tab-pane" id="fk-pane">
-	<div class="tscroll">
-		<div class="sec-h">Outgoing (this → other)</div>
-		<table><thead><tr><th>Constraint</th><th>Columns</th><th>References</th><th>Ref. Columns</th></tr></thead>
-		<tbody>${fkRows(outgoing, 'outgoing')}</tbody></table>
-		<div class="sec-h" style="margin-top:1px">Incoming (other → this)</div>
-		<table><thead><tr><th>Constraint</th><th>Ref. Columns</th><th>From Table</th><th>Columns</th></tr></thead>
-		<tbody>${fkRows(incoming, 'incoming')}</tbody></table>
-	</div>
-</div>
-
-<!-- ── CONSTRAINTS ── -->
-<div class="tab-pane" id="constraints-pane">
-	<div class="tscroll"><table>
-		<thead><tr><th>Name</th><th>Type</th><th>Columns</th><th>Definition</th></tr></thead>
-		<tbody>${constraintsHtml}</tbody>
-	</table></div>
-</div>
-
 </div><!-- /content -->
 
 <!-- Add/Edit column modal -->
@@ -1003,6 +1342,23 @@ tr:hover td{background:var(--vscode-list-hoverBackground)}
 		<div class="modal-ft">
 			<button type="button" class="btn-cancel" id="cancelModal">Cancel</button>
 			<button type="button" class="btn-ok" id="confirmModal">Add Column</button>
+		</div>
+	</div>
+</div>
+
+<!-- Confirm modal (replaces window.confirm; webviews are sandboxed) -->
+<div id="confirmOv" class="modal-ov" style="display:none">
+	<div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMsg">
+		<div class="modal-hd">
+			<span class="modal-title" id="confirmTitle">Confirm</span>
+			<button class="modal-x" id="confirmClose" aria-label="Close">&times;</button>
+		</div>
+		<div class="modal-bd">
+			<div id="confirmMsg" style="white-space:pre-wrap;line-height:1.35"></div>
+		</div>
+		<div class="modal-ft">
+			<button type="button" class="btn-cancel" id="confirmCancel">Cancel</button>
+			<button type="button" class="btn-ok" id="confirmOk">OK</button>
 		</div>
 	</div>
 </div>
@@ -1054,9 +1410,6 @@ document.querySelectorAll('.tab').forEach(tab=>{
 	});
 });
 
-// ── Open in results ────────────────────────────────────────────
-document.getElementById('openInResultsBtn').onclick=()=>vscode.postMessage({command:'openInResults'});
-
 // ── FK links ───────────────────────────────────────────────────
 document.addEventListener('click',e=>{
 	const a=e.target.closest('.fk-link');
@@ -1076,6 +1429,7 @@ let selCol = null;
 let selColMeta = null;
 let modalMode = 'add';
 let editOriginalColumnName = null;
+let pendingDeleteColumn = null;
 
 document.getElementById('colBody').addEventListener('click',function(e){
 	const row = e.target instanceof Element ? e.target.closest('tr[data-col-name]') : null;
@@ -1104,15 +1458,19 @@ document.getElementById('colBody').addEventListener('click',function(e){
 });
 
 // ── Delete column ──────────────────────────────────────────────
-document.getElementById('deleteColBtn').addEventListener('click',function(){
-	if(!selCol){return;}
+document.getElementById('deleteColBtn').addEventListener('click', async function(){
+	if(!selCol){ return; }
 	// Use webview confirm — posts back to extension only if confirmed
-	if(confirm('Delete column "'+selCol+'"?\\n\\nAll data in this column will be permanently lost. Dependent objects will also be dropped (CASCADE).'))	{
-		vscode.postMessage({command:'deleteColumn', columnName: selCol});
+	const ok = await confirmModal(
+		'Delete column "'+selCol+'"?\\n\\nAll data in this column will be permanently lost. Dependent objects will also be dropped (CASCADE).',
+		{ title:'Delete column', okText:'Delete', cancelText:'Cancel' }
+	);
+	if(ok)	{
+		pendingDeleteColumn = selCol;
+		this.disabled = true;
+		document.getElementById('editColBtn').disabled=true;
+		vscode.postMessage({command:'deleteColumnClicked', columnName: selCol});
 	}
-	selCol=null; selColMeta=null;
-	this.disabled=true;
-	document.getElementById('editColBtn').disabled=true;
 });
 
 // ── Edit column ────────────────────────────────────────────────
@@ -1175,10 +1533,58 @@ document.getElementById('confirmModal').onclick=()=>{
 	closeModal();
 };
 
+// ── Confirm modal helper (window.confirm is blocked in sandboxed webviews) ──
+function confirmModal(message, opts){
+	const o = opts || {};
+	const ov = document.getElementById('confirmOv');
+	const titleEl = document.getElementById('confirmTitle');
+	const msgEl = document.getElementById('confirmMsg');
+	const okBtn = document.getElementById('confirmOk');
+	const cancelBtn = document.getElementById('confirmCancel');
+	const closeBtn = document.getElementById('confirmClose');
+
+	titleEl.textContent = o.title || 'Confirm';
+	msgEl.textContent = String(message || '');
+	okBtn.textContent = o.okText || 'OK';
+	cancelBtn.textContent = o.cancelText || 'Cancel';
+
+	ov.style.display = 'flex';
+	okBtn.focus();
+
+	return new Promise((resolve)=>{
+		function cleanup(){
+			ov.style.display = 'none';
+			document.removeEventListener('keydown', onKey);
+			ov.removeEventListener('click', onOverlayClick);
+			okBtn.removeEventListener('click', onOk);
+			cancelBtn.removeEventListener('click', onCancel);
+			closeBtn.removeEventListener('click', onCancel);
+		}
+		function finish(val){
+			cleanup();
+			resolve(!!val);
+		}
+		function onOk(){ finish(true); }
+		function onCancel(){ finish(false); }
+		function onOverlayClick(e){ if(e && e.target && e.target.id==='confirmOv'){ finish(false); } }
+		function onKey(e){
+			if(e.key==='Escape'){ finish(false); }
+			if(e.key==='Enter'){ finish(true); }
+		}
+		okBtn.addEventListener('click', onOk);
+		cancelBtn.addEventListener('click', onCancel);
+		closeBtn.addEventListener('click', onCancel);
+		ov.addEventListener('click', onOverlayClick);
+		document.addEventListener('keydown', onKey);
+	});
+}
+
 // ══════════════════════════════════════════════════════════════
 //  DATA TAB — pagination, sorting, inline editing
 // ══════════════════════════════════════════════════════════════
 const PK_COL = ${JSON.stringify(pkCol)};
+const ROW_CTID_COL = '__pgtools_ctid';
+const ALL_COLUMNS = ${allColumnsForInsert};
 let PAGE_SIZE=1000, CUR=1, TOTAL_PAGES=1, HAS_MORE=false;
 let SORT_COL=null, SORT_DIR='ASC', SORT_IDX=null, FIELDS=[];
 
@@ -1186,6 +1592,10 @@ let SORT_COL=null, SORT_DIR='ASC', SORT_IDX=null, FIELDS=[];
 const pendingEdits = new Map();
 // originalData[rowIndex][colName] = original value (from server)
 let originalData = [];
+let serverRowsLen = 0; // number of rows loaded from DB
+const newRowIndices = new Set(); // row indices inside originalData that are not persisted yet
+const selectedRowIndices = new Set();
+let lastSelectedRowIndex = null;
 
 function getEditCount(){
 	let n=0;
@@ -1200,41 +1610,109 @@ function updateChangesUI(){
 	document.getElementById('changesBadge').textContent=String(n);
 }
 
+function updateDeleteRowsButton(){
+	const btn = document.getElementById('deleteRowsBtn');
+	if (btn) { btn.disabled = selectedRowIndices.size === 0; }
+}
+
+function setRowInfo(text){
+	const el = document.getElementById('rowInfo');
+	if(el){ el.textContent = text; }
+}
+
+function applyRowSelectionStyles(){
+	document.querySelectorAll('#dataBody tr[data-row]').forEach((tr)=>{
+		const rowIdx = parseInt(tr.getAttribute('data-row')||'-1',10);
+		tr.classList.toggle('selected', selectedRowIndices.has(rowIdx));
+	});
+	updateDeleteRowsButton();
+}
+
+function isNewRow(rowIdx){
+	return newRowIndices.has(rowIdx);
+}
+
+function renderDataRows(){
+	const tbody = document.getElementById('dataBody');
+	const fields = FIELDS || [];
+	if(!tbody){ return; }
+
+	if(!originalData.length){
+		tbody.innerHTML='<tr><td colspan="100%" style="text-align:center;opacity:.4;padding:20px;font-style:italic">No data</td></tr>';
+		return;
+	}
+
+	tbody.innerHTML=originalData.map((row,ri)=>{
+		const cells=fields.map(f=>{
+			const v=row[f];
+			const isNull=v===null || v===undefined;
+			const newRow=isNewRow(ri);
+			const isPk=f===PK_COL;
+
+			const disp = isNull ? (newRow ? '' : 'NULL') : escH(String(v));
+			const dispClass = (isNull && !newRow) ? 'cell-display null-val' : 'cell-display';
+
+			return '<td class="cell'+(isPk?' pk-cell':'')+'" data-row="'+ri+'" data-col="'+escH(f)+'">'
+				+'<span class="'+dispClass+'">'+disp+'</span>'
+				+'<input class="cell-input" type="text" value="'+escH(isNull ? '' : String(v))+'">'
+				+'</td>';
+		}).join('');
+		return '<tr data-row="'+ri+'"><td class="row-num">'+(ri+1+(CUR-1)*PAGE_SIZE)+'</td>'+cells+'</tr>';
+	}).join('');
+
+	applyRowSelectionStyles();
+}
+
 // Apply / Discard
 document.getElementById('applyChangesBtn').addEventListener('click',()=>{
-	const changes=[];
+	const updates=[];
+	const insertValuesByRow = new Map(); // rowIdx -> {col: value}
+
+	// Ensure all local new rows are inserted, even if user didn't edit anything.
+	for(const rowIdx of Array.from(newRowIndices)){
+		insertValuesByRow.set(rowIdx, {});
+	}
+
 	for(const [rowIdx, colMap] of pendingEdits.entries()){
 		const orig=originalData[rowIdx];
 		if(!orig){continue;}
-		const pkVal=orig[PK_COL];
-		for(const [col,val] of colMap.entries()){
-			changes.push({pkCol:PK_COL, pkVal, col, val: val===''?null:val});
+
+		if(isNewRow(rowIdx)){
+			const values = insertValuesByRow.get(rowIdx);
+			if(!values){continue;}
+			for(const [col,val] of colMap.entries()){
+				let v = val;
+				// Convention: user can type "NULL" to force SQL NULL.
+				if(typeof v === 'string' && v.trim().toUpperCase()==='NULL'){ v = null; }
+				values[col]=v;
+			}
+		}else{
+			const pkVal=orig[PK_COL];
+			const rowCtid=orig[ROW_CTID_COL]||null;
+			for(const [col,val] of colMap.entries()){
+				updates.push({pkCol:PK_COL, pkVal, rowCtid, col, val});
+			}
 		}
 	}
-	if(changes.length===0){return;}
+
+	const inserts = Array.from(insertValuesByRow.entries()).map(([_, values])=>({ values }));
+
+	if(updates.length===0 && inserts.length===0){return;}
+
+	setRowInfo('Sending: applyTableRowEdits (inserts: ' + inserts.length + ', updates: ' + updates.length + ')…');
 	document.getElementById('applyChangesBtn').disabled=true;
-	vscode.postMessage({command:'applyRowChanges', changes});
+	vscode.postMessage({command:'applyTableRowEdits', updates, inserts});
 });
 
 document.getElementById('discardChangesBtn').addEventListener('click',()=>{
-	// Restore all edited cells to original values
-	pendingEdits.forEach((colMap,rowIdx)=>{
-		const orig=originalData[rowIdx];
-		if(!orig){return;}
-		colMap.forEach((_,col)=>{
-			const cell=document.querySelector('#dataBody tr[data-row="'+rowIdx+'"] td.cell[data-col="'+CSS.escape(col)+'"]');
-			if(cell){
-				const disp=cell.querySelector('.cell-display');
-				const orig_val=orig[col];
-				if(disp){disp.textContent=orig_val===null?'NULL':String(orig_val);}
-				if(orig_val===null){cell.querySelector('.cell-display').className='cell-display null-val';}
-				else{cell.querySelector('.cell-display').className='cell-display';}
-				cell.classList.remove('edited');
-			}
-		});
-	});
 	pendingEdits.clear();
+	newRowIndices.clear();
+	selectedRowIndices.clear();
+	lastSelectedRowIndex = null;
+	originalData = originalData.slice(0, serverRowsLen);
 	updateChangesUI();
+	document.getElementById('applyChangesBtn').disabled=false;
+	renderDataRows();
 });
 
 // Inline cell editing — double-click
@@ -1260,7 +1738,7 @@ function startCellEdit(cell){
 	const orig=originalData[rowIdx];
 	const currentVal=(pendingEdits.get(rowIdx)?.get(col)!==undefined)
 		? pendingEdits.get(rowIdx).get(col)
-		: (orig?orig[col]:null);
+		: (orig?(orig[col]===undefined?null:orig[col]):null);
 	input.value=(currentVal===null)?'':String(currentVal);
 	input.focus();
 	input.select();
@@ -1268,20 +1746,32 @@ function startCellEdit(cell){
 	function commit(){
 		cell.classList.remove('editing');
 		const newVal=input.value;
-		const origVal=orig?orig[col]:null;
+		const origVal=orig?(orig[col]===undefined?null:orig[col]):null;
 		const origStr=(origVal===null)?'':String(origVal);
 		// Only record if actually changed from DB value
 		if(newVal!==origStr){
 			if(!pendingEdits.has(rowIdx)){pendingEdits.set(rowIdx,new Map());}
 			pendingEdits.get(rowIdx).set(col,newVal===''?null:newVal);
-			disp.textContent=newVal===''?'NULL':newVal;
-			disp.className=newVal===''?'cell-display null-val':'cell-display';
+			const newRow=isNewRow(rowIdx);
+			if(newVal==='' && newRow){
+				disp.textContent='';
+				disp.className='cell-display';
+			}else{
+				disp.textContent=newVal===''?'NULL':newVal;
+				disp.className=newVal===''?'cell-display null-val':'cell-display';
+			}
 			cell.classList.add('edited');
 		} else {
 			// Revert to original if unchanged
 			if(pendingEdits.has(rowIdx)){pendingEdits.get(rowIdx).delete(col);}
-			disp.textContent=origVal===null?'NULL':String(origVal);
-			disp.className=origVal===null?'cell-display null-val':'cell-display';
+			const newRow=isNewRow(rowIdx);
+			if(origVal===null && newRow){
+				disp.textContent='';
+				disp.className='cell-display';
+			}else{
+				disp.textContent=origVal===null?'NULL':String(origVal);
+				disp.className=origVal===null?'cell-display null-val':'cell-display';
+			}
 			cell.classList.remove('edited');
 		}
 		updateChangesUI();
@@ -1298,14 +1788,106 @@ function startCellEdit(cell){
 	});
 }
 
-// Row selection (single click)
-let selectedRow=null;
+// Row selection (single / ctrl / shift)
 document.getElementById('dataBody').addEventListener('click',e=>{
-	const row=e.target.closest('tr');
-	if(!row||e.target.closest('td.cell')){return;}
-	if(selectedRow){selectedRow.classList.remove('selected');}
-	selectedRow=row; row.classList.add('selected');
+	const row=e.target.closest('tr[data-row]');
+	if(!row){return;}
+	const rowIdx = parseInt(row.dataset.row,10);
+	if(Number.isNaN(rowIdx)){return;}
+	if(e.shiftKey && lastSelectedRowIndex!==null){
+		const [from,to]=rowIdx>lastSelectedRowIndex?[lastSelectedRowIndex,rowIdx]:[rowIdx,lastSelectedRowIndex];
+		selectedRowIndices.clear();
+		for(let i=from;i<=to;i++){selectedRowIndices.add(i);}
+	}else if(e.ctrlKey || e.metaKey){
+		if(selectedRowIndices.has(rowIdx)){selectedRowIndices.delete(rowIdx);}
+		else{selectedRowIndices.add(rowIdx);}
+		lastSelectedRowIndex=rowIdx;
+	}else{
+		selectedRowIndices.clear();
+		selectedRowIndices.add(rowIdx);
+		lastSelectedRowIndex=rowIdx;
+	}
+	applyRowSelectionStyles();
 });
+
+document.getElementById('deleteRowsBtn').addEventListener('click', async ()=>{
+	// Notify extension immediately (for click debugging)
+	vscode.postMessage({ command:'__deleteRowsButtonClicked' });
+	console.log('[pgsql-tools] deleteRows click; selection size:', selectedRowIndices.size, 'newRowIndices size:', newRowIndices.size);
+	setRowInfo('Preparing delete... (selected: ' + selectedRowIndices.size + ')');
+	if(selectedRowIndices.size===0){
+		console.warn('[pgsql-tools] deleteRows: nothing selected');
+		return;
+	}
+
+	const sorted = Array.from(selectedRowIndices).sort((a,b)=>a-b);
+	console.log('[pgsql-tools] deleteRows request, selected indices:', sorted);
+
+	// Split selection into local new rows and persisted rows.
+	const newSelected = sorted.filter((idx)=>isNewRow(idx));
+	const persistedSelected = sorted.filter((idx)=>!isNewRow(idx));
+	console.log('[pgsql-tools] deleteRows split; new:', newSelected, 'persisted:', persistedSelected);
+	setRowInfo('Delete: selected=' + sorted.length + ', new=' + newSelected.length + ', persisted=' + persistedSelected.length);
+
+	if(newSelected.length>0){
+		// New (not persisted) rows are deleted locally only.
+		// Note: local new rows are expected to be appended at the end, so slicing by serverRowsLen is safe.
+		console.log('[pgsql-tools] deleteRows: local new rows removed:', newSelected);
+		pendingEdits.clear();
+		newRowIndices.clear();
+		selectedRowIndices.clear();
+		lastSelectedRowIndex = null;
+		if(typeof serverRowsLen === 'number' && serverRowsLen>=0){
+			originalData = originalData.slice(0, serverRowsLen);
+		}
+		updateChangesUI();
+		renderDataRows();
+	}
+
+	// If everything was local/new, nothing to send to server.
+	if(persistedSelected.length===0){
+		return;
+	}
+
+	const ok = await confirmModal(
+		'Delete '+persistedSelected.length+' selected row(s) from server?\\n\\nThis action cannot be undone.',
+		{ title:'Delete rows', okText:'Delete', cancelText:'Cancel' }
+	);
+	if(!ok){return;}
+	const rows = persistedSelected.map((idx)=>{
+		const data = originalData[idx] || {};
+		return {
+			pkCol: PK_COL,
+			pkVal: Object.prototype.hasOwnProperty.call(data, PK_COL) ? data[PK_COL] : null,
+			rowCtid: data[ROW_CTID_COL] || null
+		};
+	});
+	console.log('[pgsql-tools] deleteRows payload (persisted only):', rows);
+	setRowInfo('Sending: deleteRows (' + rows.length + ' persisted row(s))…');
+	vscode.postMessage({ command:'deleteRows', rows });
+});
+
+function addEmptyLocalRow(){
+	// Create an empty (unpersisted) row in the UI and select it.
+	const newIdx = originalData.length;
+	const row = {};
+	for(const col of ALL_COLUMNS){ row[col] = null; }
+	row[ROW_CTID_COL] = null;
+
+	originalData.push(row);
+	newRowIndices.add(newIdx);
+
+	selectedRowIndices.clear();
+	selectedRowIndices.add(newIdx);
+	lastSelectedRowIndex = newIdx;
+
+	renderDataRows();
+
+	const tr = document.querySelector('#dataBody tr[data-row="'+newIdx+'"]');
+	if(tr){ tr.scrollIntoView({ block:'nearest' }); }
+}
+
+document.getElementById('addRowBtn').addEventListener('click', addEmptyLocalRow);
 
 // Search
 document.getElementById('dataSearch').addEventListener('input',e=>{
@@ -1338,6 +1920,10 @@ function loadPage(p){
 	document.getElementById('rowInfo').textContent='Loading…';
 	// Clear pending edits when changing page
 	pendingEdits.clear();
+	selectedRowIndices.clear();
+	lastSelectedRowIndex = null;
+	newRowIndices.clear();
+	applyRowSelectionStyles();
 	updateChangesUI();
 	PAGE_SIZE=parseInt(document.getElementById('dataLimit').value,10)||1000;
 	if(SORT_COL&&FIELDS.includes(SORT_COL)){
@@ -1373,6 +1959,8 @@ window.addEventListener('message',e=>{
 		const fields=msg.fields||[];
 		if(fields.length>0){FIELDS=fields;}
 		originalData=msg.rows||[];
+		serverRowsLen = originalData.length;
+		newRowIndices.clear();
 
 		if(!originalData.length){
 			tbody.innerHTML='<tr><td colspan="100%" style="text-align:center;opacity:.4;padding:20px;font-style:italic">No data</td></tr>';
@@ -1381,21 +1969,9 @@ window.addEventListener('message',e=>{
 			return;
 		}
 
-		tbody.innerHTML=originalData.map((row,ri)=>{
-			const cells=fields.map(f=>{
-				const v=row[f];
-				const isNull=v===null;
-				const disp=isNull?'NULL':escH(String(v));
-				const dispClass=isNull?'cell-display null-val':'cell-display';
-				const isPk=f===PK_COL;
-				// PK cells are read-only (no dblclick editing), shown with slight tint
-				return '<td class="cell'+(isPk?' pk-cell':'')+'" data-row="'+ri+'" data-col="'+escH(f)+'">'
-					+'<span class="'+dispClass+'">'+disp+'</span>'
-					+'<input class="cell-input" type="text" value="'+escH(isNull?'':String(v))+'">'
-					+'</td>';
-			}).join('');
-			return '<tr data-row="'+ri+'"><td class="row-num">'+(ri+1+(CUR-1)*PAGE_SIZE)+'</td>'+cells+'</tr>';
-		}).join('');
+		selectedRowIndices.clear();
+		lastSelectedRowIndex = null;
+		renderDataRows();
 
 		HAS_MORE=originalData.length>=PAGE_SIZE;
 		TOTAL_PAGES=HAS_MORE?CUR+1:CUR;
@@ -1426,10 +2002,61 @@ window.addEventListener('message',e=>{
 		document.querySelectorAll('#dataBody td.cell.edited').forEach(c=>c.classList.remove('edited'));
 		updateChangesUI();
 		document.getElementById('applyChangesBtn').disabled=false;
+		setRowInfo('✓ applyRowChanges applied');
 	}
 
 	if(msg.command==='rowChangesFailed'){
 		document.getElementById('applyChangesBtn').disabled=false;
+		console.error('[pgsql-tools] rowChangesFailed:', msg.error);
+		setRowInfo('✗ applyRowChanges failed');
+	}
+
+	if(msg.command==='rowsDeleted'){
+		selectedRowIndices.clear();
+		lastSelectedRowIndex = null;
+		applyRowSelectionStyles();
+		loadPage(CUR);
+		setRowInfo('✓ deleteRows applied (' + (msg.deleted ?? 'ok') + ')');
+		return;
+	}
+
+	if(msg.command==='deleteRowsFailed'){
+		console.error('[pgsql-tools] deleteRowsFailed:', msg.error);
+		setRowInfo('✗ deleteRows failed (see console / Query Results)');
+		return;
+	}
+
+	if(msg.command==='tableRowEditsApplied'){
+		pendingEdits.clear();
+		newRowIndices.clear();
+		selectedRowIndices.clear();
+		lastSelectedRowIndex = null;
+		document.getElementById('applyChangesBtn').disabled=false;
+		loadPage(CUR);
+		setRowInfo('✓ applyTableRowEdits applied');
+		return;
+	}
+
+	if(msg.command==='tableRowEditsFailed'){
+		document.getElementById('applyChangesBtn').disabled=false;
+		console.error('[pgsql-tools] tableRowEditsFailed:', msg.error);
+		setRowInfo('✗ applyTableRowEdits failed (see console / Query Results)');
+		return;
+	}
+
+	if(msg.command==='deleteColumnApplied'){
+		pendingDeleteColumn=null;
+		return;
+	}
+
+	if(msg.command==='deleteColumnFailed'){
+		const deleteBtn=document.getElementById('deleteColBtn');
+		const editBtn=document.getElementById('editColBtn');
+		if(deleteBtn){ deleteBtn.disabled = !selCol; }
+		if(editBtn){ editBtn.disabled = !selCol; }
+		const errText = msg.error || ('Failed to delete column "'+(pendingDeleteColumn||'')+'"');
+		pendingDeleteColumn=null;
+		alert(errText);
 	}
 });
 

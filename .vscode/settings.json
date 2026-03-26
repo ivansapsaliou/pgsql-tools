@@ -5,6 +5,7 @@
 	"files.exclude": {
 		"out": false
 	},
+	"workbench.tree.expandMode": "doubleClick",
 	"Codegeex.GenerationPreference": "automatic",
 	"Codegeex.SidebarUI.LanguagePreference": "English"
 }

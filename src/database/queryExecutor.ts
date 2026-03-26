@@ -32,6 +32,8 @@ export interface ConstraintInfo {
 }
 
 export class QueryExecutor {
+	private perClientQueue: WeakMap<pg.Client, Promise<void>> = new WeakMap();
+
 	constructor(private connectionManager: ConnectionManager) {}
 
 	async executeQuery(query: string): Promise<QueryResult> {
@@ -46,16 +48,36 @@ export class QueryExecutor {
 	 * Execute a query on a specific pg.Client (without changing the active connection).
 	 */
 	async executeQueryOnClient(client: pg.Client, query: string): Promise<QueryResult> {
-		try {
-			const result = await client.query(query);
-			return {
-				rows: result.rows,
-				rowCount: result.rowCount || 0,
-				fields: result.fields
-			};
-		} catch (error) {
-			throw new Error(`Query execution failed: ${error}`);
-		}
+		// pg discourages concurrent .query() calls on the same Client; serialize per-client.
+		return this.enqueueOnClient(client, async () => {
+			try {
+				const result = await client.query(query);
+				return {
+					rows: result.rows,
+					rowCount: result.rowCount || 0,
+					fields: result.fields
+				};
+			} catch (error) {
+				throw new Error(`Query execution failed: ${error}`);
+			}
+		});
+	}
+
+	private enqueueOnClient<T>(client: pg.Client, fn: () => Promise<T>): Promise<T> {
+		const prev = this.perClientQueue.get(client) ?? Promise.resolve();
+		const next = prev
+			.catch(() => undefined)
+			.then(fn);
+
+		this.perClientQueue.set(
+			client,
+			next.then(
+				() => undefined,
+				() => undefined
+			)
+		);
+
+		return next;
 	}
 
 	async getSchemata(): Promise<string[]> {

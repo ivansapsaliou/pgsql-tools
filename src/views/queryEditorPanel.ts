@@ -11,19 +11,26 @@ export class QueryEditorPanel {
 		queryExecutor: QueryExecutor,
 		connectionManager: ConnectionManager
 	) {
+		const activeConnectionName = connectionManager.getActiveConnectionName();
+		const panelTitle = activeConnectionName
+			? `PostgreSQL Query - ${activeConnectionName}`
+			: 'PostgreSQL Query';
+
 		if (this.panel) {
+			this.panel.title = panelTitle;
+			this.panel.webview.html = this.getHtml(activeConnectionName);
 			this.panel.reveal();
 			return;
 		}
 
 		this.panel = vscode.window.createWebviewPanel(
 			'pgsqlQuery',
-			'PostgreSQL Query',
+			panelTitle,
 			vscode.ViewColumn.One,
 			{ enableScripts: true }
 		);
 
-		this.panel.webview.html = this.getHtml(connectionManager.getActiveConnectionName());
+		this.panel.webview.html = this.getHtml(activeConnectionName);
 
 		this.panel.webview.onDidReceiveMessage(async (message) => {
 			if (message.command === 'executeQuery') {

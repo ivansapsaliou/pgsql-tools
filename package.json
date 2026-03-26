@@ -80,6 +80,16 @@
 				"icon": "$(plug)"
 			},
 			{
+				"command": "pgsql-tools.connectConnection",
+				"title": "PostgreSQL: Connect",
+				"icon": "$(debug-start)"
+			},
+			{
+				"command": "pgsql-tools.disconnectConnection",
+				"title": "PostgreSQL: Disconnect",
+				"icon": "$(debug-stop)"
+			},
+			{
 				"command": "pgsql-tools.schemaDiff",
 				"title": "PostgreSQL: Schema Diff…",
 				"icon": "$(diff)"
@@ -177,8 +187,23 @@
 					"group": "inline@1"
 				},
 				{
+					"command": "pgsql-tools.disconnectConnection",
+					"when": "view == pgsqlDatabases && viewItem == connection",
+					"group": "inline@2"
+				},
+				{
+					"command": "pgsql-tools.connectConnection",
+					"when": "view == pgsqlDatabases && viewItem == connection_disconnected",
+					"group": "inline@1"
+				},
+				{
 					"command": "pgsql-tools.deleteConnection",
 					"when": "view == pgsqlDatabases && viewItem == connection",
+					"group": "inline@3"
+				},
+				{
+					"command": "pgsql-tools.deleteConnection",
+					"when": "view == pgsqlDatabases && viewItem == connection_disconnected",
 					"group": "inline@2"
 				},
 				{

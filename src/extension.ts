@@ -19,6 +19,8 @@ let databaseTreeProvider: PostgreSQLTreeDataProvider;
 let queryExecutor: QueryExecutor;
 let sqlCompletionProvider: SQLCompletionProvider;
 let resultsViewProvider: ResultsViewProvider;
+let connectionStatusBar: vscode.StatusBarItem;
+let sqlCodeLensEmitter: vscode.EventEmitter<void>;
 
 export async function activate(context: vscode.ExtensionContext) {
 	console.log('pgsql-tools extension is now active!');
@@ -34,6 +36,38 @@ export async function activate(context: vscode.ExtensionContext) {
 	// Восстанавливаем подключения из прошлой сессии
 	await connectionManager.restoreConnections();
 	databaseTreeProvider.refresh();
+	await vscode.workspace.getConfiguration('workbench').update(
+		'tree.expandMode',
+		'doubleClick',
+		vscode.ConfigurationTarget.Workspace
+	);
+
+	connectionStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+	connectionStatusBar.name = 'PostgreSQL Connection';
+	context.subscriptions.push(connectionStatusBar);
+	sqlCodeLensEmitter = new vscode.EventEmitter<void>();
+	context.subscriptions.push(sqlCodeLensEmitter);
+
+	const updateConnectionStatusBar = () => {
+		const activeConnection = connectionManager.getActiveConnectionName();
+		connectionStatusBar.text = activeConnection
+			? `$(database) PostgreSQL: ${activeConnection}`
+			: '$(warning) PostgreSQL: Not connected';
+		connectionStatusBar.tooltip = activeConnection
+			? `Active PostgreSQL connection: ${activeConnection}`
+			: 'No active PostgreSQL connection selected';
+		connectionStatusBar.show();
+	};
+
+	const refreshSqlConnectionCodeLens = () => {
+		sqlCodeLensEmitter.fire();
+	};
+	const refreshConnectionUi = () => {
+		databaseTreeProvider.refresh();
+		sqlCompletionProvider.refresh();
+		updateConnectionStatusBar();
+		refreshSqlConnectionCodeLens();
+	};
 
 	// Results Panel (нижняя панель)
 	context.subscriptions.push(
@@ -51,12 +85,35 @@ export async function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.languages.registerHoverProvider('sql', new SQLHoverProvider())
 	);
+	context.subscriptions.push(
+		vscode.languages.registerCodeLensProvider({ language: 'sql' }, {
+			onDidChangeCodeLenses: sqlCodeLensEmitter.event,
+			provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
+				if (document.languageId !== 'sql') return [];
+				const info = connectionManager.getActiveConnectionDisplayInfo();
+				const title = info
+					? `$(database) ${info.name} | ${info.database}`
+					: '$(warning) Not connected';
+				return [
+					new vscode.CodeLens(
+						new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 0)),
+						{
+							title,
+							command: 'pgsql-tools.noop',
+						}
+					),
+				];
+			},
+		})
+	);
 
 	// Единое дерево
 	const databaseTreeView = vscode.window.createTreeView('pgsqlDatabases', {
 		treeDataProvider: databaseTreeProvider,
 		showCollapseAll: true,
 	});
+	let lastConnectionClickName: string | null = null;
+	let lastConnectionClickAt = 0;
 
 	// Обработка клика - открытие деталей объекта
 	databaseTreeView.onDidChangeSelection((e) => {
@@ -64,6 +121,29 @@ export async function activate(context: vscode.ExtensionContext) {
 		if (selection && selection.length > 0) {
 			const item = selection[0];
 			const contextValue = (item as any).contextValue;
+			if (contextValue === 'connection' || contextValue === 'connection_disconnected') {
+				const name = (item as any).connectionName ?? (item as any).label?.replace(/^● /, '');
+				if (!name) return;
+				const now = Date.now();
+				const isDoubleClick = lastConnectionClickName === name && now - lastConnectionClickAt <= 450;
+				lastConnectionClickName = name;
+				lastConnectionClickAt = now;
+				if (isDoubleClick) {
+					void (async () => {
+						if (connectionManager.isConnected(name)) {
+							await connectionManager.disconnect(name);
+							vscode.window.showInformationMessage(`Disconnected: ${name}`);
+						} else {
+							const connected = await connectionManager.connectSavedConnection(name);
+							if (connected) {
+								vscode.window.showInformationMessage(`Connected: ${name}`);
+							}
+						}
+						refreshConnectionUi();
+					})();
+				}
+				return;
+			}
 			// Открываем детали только для конечных объектов
 			if (contextValue === 'table' || contextValue === 'view' || contextValue === 'function' || contextValue === 'procedure') {
 				const schema = (item as any).parentSchema || 'public';
@@ -81,11 +161,11 @@ export async function activate(context: vscode.ExtensionContext) {
 	});
 
 	const commands = [
+		vscode.commands.registerCommand('pgsql-tools.noop', () => undefined),
 		// ── Подключение ─────────────────────────────────────────────────────
 		vscode.commands.registerCommand('pgsql-tools.addConnection', () => {
 			ConnectionWebview.show(context, connectionManager, () => {
-				databaseTreeProvider.refresh();
-				sqlCompletionProvider.refresh();
+				refreshConnectionUi();
 			});
 		}),
 
@@ -97,9 +177,11 @@ export async function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('pgsql-tools.openQueryFile', async () => {
 			const doc = await vscode.workspace.openTextDocument({
 				language: 'sql',
-				content: `-- PostgreSQL Query\n-- Connection: ${connectionManager.getActiveConnectionName() || 'Not selected'}\n\n`,
+				content: '',
 			});
 			await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+			updateConnectionStatusBar();
+			refreshSqlConnectionCodeLens();
 		}),
 
 		// ── Детали таблицы / функции / процедуры ─────────────────────────────
@@ -119,8 +201,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 		// ── Refresh ──────────────────────────────────────────────────────────
 		vscode.commands.registerCommand('pgsql-tools.refreshDatabases', () => {
-			databaseTreeProvider.refresh();
-			sqlCompletionProvider.refresh();
+			refreshConnectionUi();
 		}),
 
 		// ── Управление подключениями ─────────────────────────────────────────
@@ -132,8 +213,7 @@ export async function activate(context: vscode.ExtensionContext) {
 			);
 			if (confirm === 'Delete') {
 				await connectionManager.removeConnection(name);
-				databaseTreeProvider.refresh();
-				sqlCompletionProvider.refresh();
+				refreshConnectionUi();
 				vscode.window.showInformationMessage(`Connection "${name}" deleted`);
 			}
 		}),
@@ -142,9 +222,24 @@ export async function activate(context: vscode.ExtensionContext) {
 			const name = node?.connectionName ?? node?.label;
 			if (!name) return;
 			connectionManager.setActiveConnection(name);
-			databaseTreeProvider.refresh();
-			sqlCompletionProvider.refresh();
+			refreshConnectionUi();
 			vscode.window.showInformationMessage(`Active connection: ${name}`);
+		}),
+		vscode.commands.registerCommand('pgsql-tools.connectConnection', async (node: any) => {
+			const name = node?.connectionName ?? node?.label;
+			if (!name) return;
+			const ok = await connectionManager.connectSavedConnection(name);
+			if (ok) {
+				refreshConnectionUi();
+				vscode.window.showInformationMessage(`Connected: ${name}`);
+			}
+		}),
+		vscode.commands.registerCommand('pgsql-tools.disconnectConnection', async (node: any) => {
+			const name = node?.connectionName ?? node?.label;
+			if (!name) return;
+			await connectionManager.disconnect(name);
+			refreshConnectionUi();
+			vscode.window.showInformationMessage(`Disconnected: ${name}`);
 		}),
 
 		// ── SQL выполнение (F9 / Ctrl+Shift+E) ──────────────────────────────
@@ -166,8 +261,31 @@ export async function activate(context: vscode.ExtensionContext) {
 	const visibilityListener = databaseTreeView.onDidChangeVisibility((e) => {
 		if (e.visible) databaseTreeProvider.refresh();
 	});
+	const activeEditorListener = vscode.window.onDidChangeActiveTextEditor(() => {
+		updateConnectionStatusBar();
+		refreshSqlConnectionCodeLens();
+	});
+	const openDocumentListener = vscode.workspace.onDidOpenTextDocument((doc) => {
+		if (doc.languageId === 'sql') {
+			updateConnectionStatusBar();
+			refreshSqlConnectionCodeLens();
+		}
+	});
+	const changeDocumentListener = vscode.workspace.onDidChangeTextDocument((event) => {
+		if (event.document.languageId === 'sql') {
+			refreshSqlConnectionCodeLens();
+		}
+	});
 
-	context.subscriptions.push(...commands, visibilityListener);
+	updateConnectionStatusBar();
+	refreshSqlConnectionCodeLens();
+	context.subscriptions.push(
+		...commands,
+		visibilityListener,
+		activeEditorListener,
+		openDocumentListener,
+		changeDocumentListener
+	);
 }
 
 export function deactivate() {
