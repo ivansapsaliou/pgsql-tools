@@ -151,7 +151,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		ExecuteSqlFileCommand.register(queryExecutor, connectionManager, resultsViewProvider),
 
 		// ── Schema Diff ──────────────────────────────────────────────────────
-		SchemaDiffCommand.register(queryExecutor, connectionManager, resultsViewProvider),
+		SchemaDiffCommand.register(queryExecutor, connectionManager, context),
 
 		// ── ERD (теперь отдельная панель) ────────────────────────────────────
 		...ShowERDCommand.register(queryExecutor, connectionManager, context),
