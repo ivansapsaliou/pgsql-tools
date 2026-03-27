@@ -96,48 +96,10 @@ export class ConnectionManager {
 	 * Восстанавливает сохранённые подключения при старте.
 	 */
 	async restoreConnections(): Promise<void> {
-		const saved = this.getSavedList();
-		for (const conn of saved) {
-			const password = await this.loadPassword(conn.name);
-			if (password === undefined) continue;
-
-			const sshPassword = conn.ssh
-				? await this.loadSshPassword(conn.name)
-				: undefined;
-			const sshPassphrase = conn.ssh
-				? await this.loadSshPassphrase(conn.name)
-				: undefined;
-
-			try {
-				let host = conn.host;
-				let port = conn.port;
-				let tunnel: TunnelInfo | undefined;
-
-				if (conn.ssh) {
-					const sshCfg: SshConfig = {
-						...conn.ssh,
-						password: sshPassword,
-						passphrase: sshPassphrase,
-					};
-					tunnel = await openSshTunnel(sshCfg, conn.host, conn.port);
-					host = '127.0.0.1';
-					port = tunnel.localPort;
-				}
-
-				const client = new pg.Client({ host, port, database: conn.database, user: conn.user, password });
-				await client.connect();
-
-				client.on('error', (err) => {
-					console.error(`Connection "${conn.name}" error:`, err.message);
-					this.removeActiveEntry(conn.name);
-				});
-
-				this.connections.set(conn.name, { client, tunnel });
-				// Важно: при старте расширения не выбираем активное подключение автоматически.
-			} catch (err) {
-				console.warn(`Could not restore connection "${conn.name}":`, err);
-			}
-		}
+		// При старте восстанавливаем только список сохранённых конфигураций
+		// (они уже хранятся в globalState), но не открываем соединения автоматически.
+		// Объекты/схемы должны загружаться только после явного connect.
+		this.activeConnection = null;
 	}
 
 	getActiveConnection(): pg.Client | null {

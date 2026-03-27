@@ -19,6 +19,7 @@
 <div class="content">
 <div class="tab-pane active" id="columns-pane">
 	<div class="toolbar">
+		<button class="btn-inline secondary" id="refreshPanelBtn" title="Reload object details">⟳ Page</button>
 		<button class="btn-act" id="addColBtn" title="Add column">+</button>
 		<button class="btn-act danger" id="deleteColBtn" disabled title="Delete selected column">−</button>
 		<button class="btn-act" id="editColBtn" disabled title="Edit selected column">✎</button>
@@ -48,6 +49,7 @@
 <div class="tab-pane" id="data-pane">
 	<div class="toolbar">
 		<div class="sw"><span class="si">⌕</span><input class="sinput" id="dataSearch" placeholder="Search rows..." autocomplete="off"></div>
+		<button class="btn-inline secondary" id="refreshDataBtn">⟳ Data</button>
 		<button class="btn-inline" id="addRowBtn">+ Row</button>
 		<button class="btn-inline danger" id="deleteRowsBtn" disabled>− Delete</button>
 		<label style="display:flex;align-items:center;gap:4px;font-size:11px;flex-shrink:0"><span style="opacity:.5">Limit:</span><input type="text" class="sinput" id="dataLimit" value="1000" style="width:60px;text-align:right;padding-left:8px"></label>

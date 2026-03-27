@@ -21,6 +21,13 @@
 					"title": "PostgreSQL Tools",
 					"icon": "resources/database-icon.svg"
 				}
+			],
+			"panel": [
+				{
+					"id": "pgsql-tools-panel",
+					"title": "PostgreSQL",
+					"icon": "resources/database-icon.svg"
+				}
 			]
 		},
 		"views": {
@@ -31,7 +38,7 @@
 					"when": "true"
 				}
 			],
-			"panel": [
+			"pgsql-tools-panel": [
 				{
 					"type": "webview",
 					"id": "pgsqlResults",

@@ -228,6 +228,7 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider {
 		min-width: 100%;
 		border-collapse: collapse;
 		font-size: 12px;
+		table-layout: fixed;
 	}
 
 	thead { position: sticky; top: 0; z-index: 10; }
@@ -245,6 +246,9 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider {
 		white-space: nowrap;
 		cursor: pointer;
 		user-select: none;
+		position: relative;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 	th:hover { background: var(--vscode-list-hoverBackground); }
 	th.sorted { color: var(--vscode-textLink-foreground); }
@@ -285,6 +289,22 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider {
 	.cell--null .null-val, .null-val {
 		color: var(--vscode-debugTokenExpression-null, #808080);
 		font-style: italic;
+	}
+
+	.col-resizer {
+		position: absolute;
+		top: 0;
+		right: -2px;
+		width: 6px;
+		height: 100%;
+		cursor: col-resize;
+		user-select: none;
+		touch-action: none;
+		z-index: 15;
+	}
+	.col-resizer:hover, .col-resizer.active {
+		background: var(--vscode-focusBorder);
+		opacity: 0.55;
 	}
 
 	/* ── CONTEXT MENU ── */
@@ -406,12 +426,150 @@ export class ResultsViewProvider implements vscode.WebviewViewProvider {
 
 <script>
 const vscode = acquireVsCodeApi();
+const RESIZE_MIN_WIDTH = 1;
+const AUTO_MAX_WIDTH = 560;
+const SAMPLE_ROWS_PER_COLUMN = 80;
+let suppressSortClickUntil = 0;
+const measureCanvas = document.createElement('canvas');
+const measureCtx = measureCanvas.getContext('2d');
 
 // ── PAGINATION ──────────────────────────────────────────────────
 const PAGE_SIZE = 100;
 let allRows = Array.from(document.querySelectorAll('#tbody tr'));
 let filteredRows = [...allRows];
 let currentPage = 1;
+
+function ensureColgroup(table, colCount) {
+	let colgroup = table.querySelector('colgroup');
+	if (!colgroup) {
+		colgroup = document.createElement('colgroup');
+		table.insertBefore(colgroup, table.firstChild);
+	}
+	while (colgroup.children.length < colCount) colgroup.appendChild(document.createElement('col'));
+	while (colgroup.children.length > colCount) colgroup.removeChild(colgroup.lastChild);
+	return colgroup;
+}
+
+function readSizingState() {
+	const state = vscode.getState();
+	const sizing = state && state.resultsColumnSizing;
+	if (!sizing || !Array.isArray(sizing.widths) || !Array.isArray(sizing.manual)) {
+		return { widths: [], manual: [] };
+	}
+	return { widths: sizing.widths.slice(), manual: sizing.manual.slice() };
+}
+
+function saveSizingState(widths, manual) {
+	vscode.setState(Object.assign({}, vscode.getState(), { resultsColumnSizing: { widths: widths.slice(), manual: manual.slice() } }));
+}
+
+function measureTextPx(table, text) {
+	if (!measureCtx) return String(text || '').length * 7;
+	const sampleCell = table.querySelector('th,td');
+	const style = sampleCell ? getComputedStyle(sampleCell) : getComputedStyle(document.body);
+	measureCtx.font = style.font || ((style.fontSize || '12px') + ' ' + (style.fontFamily || 'sans-serif'));
+	return Math.ceil(measureCtx.measureText(String(text || '')).width);
+}
+
+function clampAutoWidth(width) { return Math.max(RESIZE_MIN_WIDTH, Math.min(AUTO_MAX_WIDTH, Math.ceil(width))); }
+function clampResizeWidth(width) { return Math.max(RESIZE_MIN_WIDTH, Math.ceil(width)); }
+
+function getColumnAutoWidth(table, colIdx) {
+	const headCell = table.querySelector('thead tr th:nth-child(' + (colIdx + 1) + ')');
+	if (!headCell) return 120;
+	if (headCell.classList.contains('row-num-col')) return 40;
+	let maxWidth = measureTextPx(table, headCell.textContent || '') + 22;
+	allRows.slice(0, SAMPLE_ROWS_PER_COLUMN).forEach((row) => {
+		const cell = row.children[colIdx];
+		if (!cell) return;
+		const textWidth = measureTextPx(table, cell.textContent || '') + 22;
+		if (textWidth > maxWidth) maxWidth = textWidth;
+	});
+	return clampAutoWidth(maxWidth);
+}
+
+function applyColWidth(table, colIdx, width) {
+	const col = table.querySelector('colgroup')?.children[colIdx];
+	if (!col) return;
+	col.style.width = Math.max(RESIZE_MIN_WIDTH, Math.ceil(width)) + 'px';
+}
+
+function setupColumnResizing() {
+	const table = document.getElementById('mainTable');
+	if (!table) return;
+	const headers = Array.from(table.querySelectorAll('thead tr th'));
+	if (!headers.length) return;
+	ensureColgroup(table, headers.length);
+
+	const sizing = readSizingState();
+	while (sizing.widths.length < headers.length) sizing.widths.push(0);
+	while (sizing.manual.length < headers.length) sizing.manual.push(false);
+	if (sizing.widths.length > headers.length) sizing.widths.length = headers.length;
+	if (sizing.manual.length > headers.length) sizing.manual.length = headers.length;
+
+	headers.forEach((th, idx) => {
+		const rowNum = th.classList.contains('row-num-col');
+		if (rowNum) {
+			sizing.widths[idx] = 40;
+			sizing.manual[idx] = true;
+			applyColWidth(table, idx, 40);
+			return;
+		}
+		if (sizing.manual[idx] && sizing.widths[idx]) {
+			applyColWidth(table, idx, sizing.widths[idx]);
+		} else {
+			const autoWidth = getColumnAutoWidth(table, idx);
+			sizing.widths[idx] = autoWidth;
+			applyColWidth(table, idx, autoWidth);
+		}
+		let handle = th.querySelector('.col-resizer');
+		if (!handle) {
+			handle = document.createElement('div');
+			handle.className = 'col-resizer';
+			th.appendChild(handle);
+		}
+		if (handle.dataset.bound === '1') return;
+		handle.dataset.bound = '1';
+
+		handle.addEventListener('dblclick', (ev) => {
+			ev.preventDefault();
+			ev.stopPropagation();
+			sizing.manual[idx] = false;
+			const autoWidth = getColumnAutoWidth(table, idx);
+			sizing.widths[idx] = autoWidth;
+			applyColWidth(table, idx, autoWidth);
+			saveSizingState(sizing.widths, sizing.manual);
+		});
+
+		handle.addEventListener('mousedown', (ev) => {
+			ev.preventDefault();
+			ev.stopPropagation();
+			const startX = ev.clientX;
+			const currentWidth = parseInt(table.querySelector('colgroup')?.children[idx]?.style.width || '0', 10) || th.offsetWidth || RESIZE_MIN_WIDTH;
+			let moved = false;
+			handle.classList.add('active');
+			function onMove(moveEv) {
+				const delta = moveEv.clientX - startX;
+				if (Math.abs(delta) > 2) moved = true;
+				const nextWidth = clampResizeWidth(currentWidth + delta);
+				sizing.widths[idx] = nextWidth;
+				sizing.manual[idx] = true;
+				applyColWidth(table, idx, nextWidth);
+			}
+			function onUp() {
+				document.removeEventListener('mousemove', onMove);
+				document.removeEventListener('mouseup', onUp);
+				handle.classList.remove('active');
+				if (moved) suppressSortClickUntil = Date.now() + 300;
+				saveSizingState(sizing.widths, sizing.manual);
+			}
+			document.addEventListener('mousemove', onMove);
+			document.addEventListener('mouseup', onUp, { once: true });
+		});
+	});
+
+	saveSizingState(sizing.widths, sizing.manual);
+}
 
 function totalPages() { return Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE)); }
 
@@ -476,7 +634,10 @@ document.getElementById('searchInput').addEventListener('input', e => {
 let sortCol = null, sortAsc = true;
 
 document.querySelectorAll('th.sortable').forEach(th => {
-	th.addEventListener('click', () => {
+	th.addEventListener('click', (ev) => {
+		if ((ev.target && ev.target.closest && ev.target.closest('.col-resizer')) || Date.now() < suppressSortClickUntil) {
+			return;
+		}
 		const col = th.dataset.column;
 		if (sortCol === col) { sortAsc = !sortAsc; }
 		else { sortCol = col; sortAsc = true; }
@@ -583,6 +744,7 @@ document.addEventListener('keydown', e => {
 	}
 });
 
+setupColumnResizing();
 renderPage();
 </script>
 </body>

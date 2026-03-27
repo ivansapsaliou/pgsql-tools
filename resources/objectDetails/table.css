@@ -54,11 +54,12 @@ html,body{width:100%;height:100%;font-family:var(--vscode-font-family);font-size
 	color:var(--vscode-badge-foreground);border-radius:8px;font-size:10px;font-weight:600}
 
 .tscroll{flex:1;overflow:auto}
-table{width:100%;border-collapse:collapse;font-size:12px}
+table{width:max-content;min-width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed}
 thead{position:sticky;top:0;z-index:5}
 th{padding:4px 10px;text-align:left;background:var(--vscode-editorGroupHeader-tabsBackground);
 	font-weight:600;font-size:11px;border-bottom:2px solid var(--vscode-panel-border);
-	border-right:1px solid var(--vscode-panel-border);white-space:nowrap}
+	border-right:1px solid var(--vscode-panel-border);white-space:nowrap;position:relative;
+	overflow:hidden;text-overflow:ellipsis}
 th.sortable{cursor:pointer;user-select:none}
 th.sortable:hover{background:var(--vscode-list-hoverBackground)}
 th.sorted-asc .sort-icon::after{content:' ▲';font-size:8px}
@@ -92,6 +93,22 @@ tr:hover td{background:var(--vscode-list-hoverBackground)}
 #dataTable .row-num{width:40px;min-width:40px;text-align:right;color:var(--vscode-editorLineNumber-foreground);
 	font-size:10px;border-right:2px solid var(--vscode-panel-border);padding-right:6px;
 	cursor:default;user-select:none;background:var(--vscode-editorGutter-background,var(--vscode-editorGroupHeader-tabsBackground));}
+
+.col-resizer{
+	position:absolute;
+	top:0;
+	right:-2px;
+	width:6px;
+	height:100%;
+	cursor:col-resize;
+	user-select:none;
+	touch-action:none;
+	z-index:15;
+}
+.col-resizer:hover,.col-resizer.active{
+	background:var(--vscode-focusBorder);
+	opacity:.55;
+}
 
 .badge{display:inline-block;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700}
 .badge--pk{background:rgba(86,156,214,.2);color:#569cd6}

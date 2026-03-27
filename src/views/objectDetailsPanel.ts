@@ -26,6 +26,24 @@ interface ColumnDetail {
 	fk_col: string | null;
 }
 
+interface TableRenderModel {
+	columnCount: number;
+	keysCount: number;
+	checksCount: number;
+	indexesCount: number;
+	columnsTabHtml: string;
+	keyConstraintsHtml: string;
+	outgoingFkHtml: string;
+	incomingFkHtml: string;
+	checksHtml: string;
+	dataHeaderHtml: string;
+	indexesHtml: string;
+	ddl: string;
+	pkCol: string;
+	allColumns: string[];
+	fieldNames: string[];
+}
+
 const ICONS: Record<string, { light: string; dark: string }> = {
 	table: {
 		light: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect x="1" y="2" width="14" height="3" rx="0.5" fill="#007acc"/><rect x="1" y="6" width="6" height="3" rx="0.5" fill="#007acc" opacity="0.7"/><rect x="9" y="6" width="6" height="3" rx="0.5" fill="#007acc" opacity="0.7"/><rect x="1" y="11" width="6" height="3" rx="0.5" fill="#007acc" opacity="0.5"/><rect x="9" y="11" width="6" height="3" rx="0.5" fill="#007acc" opacity="0.5"/></svg>`,
@@ -146,6 +164,10 @@ export class ObjectDetailsPanel {
 						context, message.schema, message.table, 'table',
 						queryExecutor, connectionManager, resultsViewProvider
 					);
+					break;
+
+				case 'refreshPanel':
+					await this._refreshPanelInPlace(panel, panelKey, schema, objectName, objectType, queryExecutor);
 					break;
 
 				case 'loadPage':
@@ -586,6 +608,43 @@ export class ObjectDetailsPanel {
 		}
 	}
 
+	private static async _refreshPanelInPlace(
+		panel: vscode.WebviewPanel,
+		panelKey: string,
+		schema: string,
+		objectName: string,
+		objectType: string,
+		queryExecutor: QueryExecutor
+	) {
+		if (!this.panels.has(panelKey)) { return; }
+		try {
+			if (objectType === 'table') {
+				const [ddl, indexes, foreignKeys, constraints, columnDetails] = await Promise.all([
+					queryExecutor.getTableDDL(schema, objectName),
+					queryExecutor.getIndexes(schema, objectName),
+					queryExecutor.getForeignKeys(schema, objectName),
+					queryExecutor.getConstraints(schema, objectName),
+					this._fetchColumnDetails(queryExecutor, schema, objectName),
+				]);
+				if (!this.panels.has(panelKey)) { return; }
+				const snapshot = this._buildTableRenderModel(schema, ddl, indexes, foreignKeys, constraints, columnDetails);
+				panel.webview.postMessage({ command: 'panelSnapshot', snapshot });
+				return;
+			}
+			if (objectType === 'view') {
+				const [ddl, columnDetails] = await Promise.all([
+					queryExecutor.getViewDDL(schema, objectName),
+					this._fetchColumnDetails(queryExecutor, schema, objectName),
+				]);
+				if (!this.panels.has(panelKey)) { return; }
+				const snapshot = this._buildTableRenderModel(schema, ddl, [], [], [], columnDetails);
+				panel.webview.postMessage({ command: 'panelSnapshot', snapshot });
+			}
+		} catch (err) {
+			vscode.window.showErrorMessage(`Failed to refresh object details: ${err}`);
+		}
+	}
+
 	private static async _fetchColumnDetails(
 		queryExecutor: QueryExecutor,
 		schema: string,
@@ -702,29 +761,23 @@ export class ObjectDetailsPanel {
 		return fs.readFileSync(uri.fsPath, 'utf8');
 	}
 
-	private static _tableHtml(
-		context: vscode.ExtensionContext,
-		webview: vscode.Webview,
+	private static _buildTableRenderModel(
 		schema: string,
-		tableName: string,
 		ddl: string,
 		indexes: IndexInfo[],
 		foreignKeys: ForeignKeyInfo[],
 		constraints: ConstraintInfo[],
 		columnDetails: ColumnDetail[]
-	): string {
+	): TableRenderModel {
 		const fieldNames = columnDetails.map(c => c.col);
-
-		// Find PK column for row editing
 		const pkCol = columnDetails.find(c => c.is_pk)?.col ?? fieldNames[0] ?? '';
 
-		// ── Columns tab ──
 		const columnsTabHtml = columnDetails.map((col) => {
 			const badges: string[] = [];
-			if (col.is_pk)                  { badges.push(`<span class="badge badge--pk">PK</span>`); }
-			if (col.is_unique && !col.is_pk){ badges.push(`<span class="badge badge--uq">UQ</span>`); }
-			if (col.fk_table)               { badges.push(`<span class="badge badge--fk">FK</span>`); }
-			if (col.notnull && !col.is_pk)  { badges.push(`<span class="badge badge--nn">NN</span>`); }
+			if (col.is_pk) { badges.push(`<span class="badge badge--pk">PK</span>`); }
+			if (col.is_unique && !col.is_pk) { badges.push(`<span class="badge badge--uq">UQ</span>`); }
+			if (col.fk_table) { badges.push(`<span class="badge badge--fk">FK</span>`); }
+			if (col.notnull && !col.is_pk) { badges.push(`<span class="badge badge--nn">NN</span>`); }
 
 			const fkRef = col.fk_table
 				? `<a class="fk-link" data-schema="${esc(schema)}" data-table="${esc(col.fk_table)}">→ ${esc(col.fk_table)}${col.fk_col ? '.' + esc(col.fk_col) : ''}</a>`
@@ -745,7 +798,6 @@ export class ObjectDetailsPanel {
 			</tr>`;
 		}).join('');
 
-		// ── Indexes tab ──
 		const indexesHtml = indexes.length
 			? indexes.map(idx => `<tr>
 				<td class="mono">${esc(idx.name)}</td>
@@ -756,7 +808,6 @@ export class ObjectDetailsPanel {
 			</tr>`).join('')
 			: '<tr><td colspan="5" class="empty">No indexes</td></tr>';
 
-		// ── FK tab ──
 		const outgoing = foreignKeys.filter(fk => fk.direction === 'outgoing');
 		const incoming = foreignKeys.filter(fk => fk.direction === 'incoming');
 		const fkRows = (fks: ForeignKeyInfo[], dir: string) => fks.length
@@ -768,7 +819,6 @@ export class ObjectDetailsPanel {
 			</tr>`).join('')
 			: `<tr><td colspan="4" class="empty">No ${dir} FK</td></tr>`;
 
-		// ── Keys & Checks tabs ──
 		const keyConstraints = constraints.filter((c) => c.type === 'PRIMARY KEY' || c.type === 'UNIQUE');
 		const checkConstraints = constraints.filter((c) => c.type === 'CHECK');
 
@@ -789,11 +839,41 @@ export class ObjectDetailsPanel {
 			</tr>`).join('')
 			: '<tr><td colspan="3" class="empty">No checks</td></tr>';
 
-		// ── Data tab header ──
 		const dataHeaderHtml = fieldNames.map((f, i) =>
 			`<th class="sortable" data-col="${i}" data-colname="${esc(f)}">${esc(f)} <span class="sort-icon"></span></th>`
 		).join('');
-		const allColumnsForInsert = JSON.stringify(fieldNames);
+
+		return {
+			columnCount: columnDetails.length,
+			keysCount: keyConstraints.length + foreignKeys.length,
+			checksCount: checkConstraints.length,
+			indexesCount: indexes.length,
+			columnsTabHtml,
+			keyConstraintsHtml,
+			outgoingFkHtml: fkRows(outgoing, 'outgoing'),
+			incomingFkHtml: fkRows(incoming, 'incoming'),
+			checksHtml,
+			dataHeaderHtml,
+			indexesHtml,
+			ddl,
+			pkCol,
+			allColumns: fieldNames,
+			fieldNames,
+		};
+	}
+
+	private static _tableHtml(
+		context: vscode.ExtensionContext,
+		webview: vscode.Webview,
+		schema: string,
+		tableName: string,
+		ddl: string,
+		indexes: IndexInfo[],
+		foreignKeys: ForeignKeyInfo[],
+		constraints: ConstraintInfo[],
+		columnDetails: ColumnDetail[]
+	): string {
+		const model = this._buildTableRenderModel(schema, ddl, indexes, foreignKeys, constraints, columnDetails);
 
 		const nonce = this._nonce();
 		const template = this._readWebviewAsset(context, 'table.html');
@@ -805,19 +885,19 @@ export class ObjectDetailsPanel {
 			.replace(/__CSP_SOURCE__/g, webview.cspSource)
 			.replace('__TABLE_CSS_URI__', cssUri)
 			.replace('__TABLE_JS_URI__', jsUri)
-			.replace('__COLUMN_COUNT__', String(columnDetails.length))
-			.replace('__KEYS_COUNT__', String(keyConstraints.length + foreignKeys.length))
-			.replace('__CHECKS_COUNT__', String(checkConstraints.length))
-			.replace('__INDEXES_COUNT__', String(indexes.length))
-			.replace('__COLUMNS_TAB_HTML__', columnsTabHtml)
-			.replace('__KEY_CONSTRAINTS_HTML__', keyConstraintsHtml)
-			.replace('__OUTGOING_FK_HTML__', fkRows(outgoing, 'outgoing'))
-			.replace('__INCOMING_FK_HTML__', fkRows(incoming, 'incoming'))
-			.replace('__CHECKS_HTML__', checksHtml)
-			.replace('__DATA_HEADER_HTML__', dataHeaderHtml)
-			.replace('__INDEXES_HTML__', indexesHtml)
-			.replace('__DDL_JSON__', JSON.stringify(ddl))
-			.replace('__PK_COL_JSON__', JSON.stringify(pkCol))
-			.replace('__ALL_COLUMNS_JSON__', allColumnsForInsert);
+			.replace('__COLUMN_COUNT__', String(model.columnCount))
+			.replace('__KEYS_COUNT__', String(model.keysCount))
+			.replace('__CHECKS_COUNT__', String(model.checksCount))
+			.replace('__INDEXES_COUNT__', String(model.indexesCount))
+			.replace('__COLUMNS_TAB_HTML__', model.columnsTabHtml)
+			.replace('__KEY_CONSTRAINTS_HTML__', model.keyConstraintsHtml)
+			.replace('__OUTGOING_FK_HTML__', model.outgoingFkHtml)
+			.replace('__INCOMING_FK_HTML__', model.incomingFkHtml)
+			.replace('__CHECKS_HTML__', model.checksHtml)
+			.replace('__DATA_HEADER_HTML__', model.dataHeaderHtml)
+			.replace('__INDEXES_HTML__', model.indexesHtml)
+			.replace('__DDL_JSON__', JSON.stringify(model.ddl))
+			.replace('__PK_COL_JSON__', JSON.stringify(model.pkCol))
+			.replace('__ALL_COLUMNS_JSON__', JSON.stringify(model.allColumns));
 	}
 }
