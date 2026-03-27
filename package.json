@@ -41,6 +41,16 @@
 		},
 		"commands": [
 			{
+				"command": "pgsql-tools.searchTree",
+				"title": "PostgreSQL: Search in Tree…",
+				"icon": "$(search)"
+			},
+			{
+				"command": "pgsql-tools.clearTreeSearch",
+				"title": "PostgreSQL: Clear Tree Search",
+				"icon": "$(close)"
+			},
+			{
 				"command": "pgsql-tools.addConnection",
 				"title": "PostgreSQL: Add Connection",
 				"icon": "$(add)"
@@ -155,29 +165,39 @@
 					"group": "navigation@1"
 				},
 				{
-					"command": "pgsql-tools.refreshDatabases",
+					"command": "pgsql-tools.searchTree",
 					"when": "view == pgsqlDatabases",
 					"group": "navigation@2"
 				},
 				{
-					"command": "pgsql-tools.openQueryFile",
+					"command": "pgsql-tools.clearTreeSearch",
 					"when": "view == pgsqlDatabases",
 					"group": "navigation@3"
 				},
 				{
-					"command": "pgsql-tools.schemaDiff",
+					"command": "pgsql-tools.refreshDatabases",
 					"when": "view == pgsqlDatabases",
 					"group": "navigation@4"
 				},
 				{
-					"command": "pgsql-tools.showERD",
+					"command": "pgsql-tools.openQueryFile",
 					"when": "view == pgsqlDatabases",
 					"group": "navigation@5"
 				},
 				{
-					"command": "pgsql-tools.showHealth",
+					"command": "pgsql-tools.schemaDiff",
 					"when": "view == pgsqlDatabases",
 					"group": "navigation@6"
+				},
+				{
+					"command": "pgsql-tools.showERD",
+					"when": "view == pgsqlDatabases",
+					"group": "navigation@7"
+				},
+				{
+					"command": "pgsql-tools.showHealth",
+					"when": "view == pgsqlDatabases",
+					"group": "navigation@8"
 				}
 			],
 			"view/item/context": [
@@ -233,6 +253,14 @@
 				}
 			],
 			"commandPalette": [
+				{
+					"command": "pgsql-tools.searchTree",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.clearTreeSearch",
+					"when": "pgsqlToolsActive"
+				},
 				{
 					"command": "pgsql-tools.showHealth",
 					"when": "pgsqlToolsActive"

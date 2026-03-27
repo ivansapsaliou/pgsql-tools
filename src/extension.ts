@@ -162,6 +162,42 @@ export async function activate(context: vscode.ExtensionContext) {
 
 	const commands = [
 		vscode.commands.registerCommand('pgsql-tools.noop', () => undefined),
+		vscode.commands.registerCommand('pgsql-tools.searchTree', async () => {
+			const current = databaseTreeProvider.getFilterText();
+			const value = await vscode.window.showInputBox({
+				prompt: 'Поиск по дереву (только активное подключение)',
+				placeHolder: 'Введите текст…',
+				value: current,
+			});
+			if (value === undefined) return; // cancelled
+			const term = value.trim();
+			await databaseTreeProvider.applySearch(term);
+
+			// Если дерево отфильтровано — просто раскрываем ветки с совпадениями.
+			if (!term) return;
+			const activeConn = connectionManager.getActiveConnectionName();
+			if (!activeConn) return;
+
+			const root = await databaseTreeProvider.getChildren();
+			const connNode = (root as any[]).find((n) => n?.contextValue === 'connection' && n?.label === activeConn);
+			if (!connNode) return;
+
+			// Раскрываем активное подключение → схемы → группы (объекты уже будут видны).
+			await databaseTreeView.reveal(connNode as any, { expand: 1, focus: false, select: false });
+			const schemas = await databaseTreeProvider.getChildren(connNode as any);
+			for (const schemaNode of schemas as any[]) {
+				if (schemaNode?.contextValue !== 'schema') continue;
+				await databaseTreeView.reveal(schemaNode, { expand: 1, focus: false, select: false });
+				const groups = await databaseTreeProvider.getChildren(schemaNode);
+				for (const groupNode of groups as any[]) {
+					if (!String(groupNode?.contextValue ?? '').startsWith('group_')) continue;
+					await databaseTreeView.reveal(groupNode, { expand: 1, focus: false, select: false });
+				}
+			}
+		}),
+		vscode.commands.registerCommand('pgsql-tools.clearTreeSearch', () => {
+			databaseTreeProvider.clearFilterText();
+		}),
 		// ── Подключение ─────────────────────────────────────────────────────
 		vscode.commands.registerCommand('pgsql-tools.addConnection', () => {
 			ConnectionWebview.show(context, connectionManager, () => {

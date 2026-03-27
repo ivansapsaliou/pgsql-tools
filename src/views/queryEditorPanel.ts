@@ -35,13 +35,28 @@ export class QueryEditorPanel {
 		this.panel.webview.onDidReceiveMessage(async (message) => {
 			if (message.command === 'executeQuery') {
 				try {
-					const result = await queryExecutor.executeQuery(message.query);
+					// Use array row mode so duplicate column names (e.g. constants -> ?column?) don't overwrite values.
+					const result = await queryExecutor.executeQueryArray(message.query);
+					const rawFieldNames = result.fields?.map((f: any) => f.name) ?? [];
+					const used = new Map<string, number>();
+					const fields = rawFieldNames.map((n: string, i: number) => {
+						let base = (n ?? '').trim();
+						if (!base || base === '?column?') base = `Column${i}`;
+						const count = used.get(base) ?? 0;
+						used.set(base, count + 1);
+						return count === 0 ? base : `${base}_${count + 1}`;
+					});
+					const rows = (result.rows ?? []).map((r: any[]) => {
+						const obj: any = {};
+						for (let i = 0; i < fields.length; i++) obj[fields[i]] = r[i];
+						return obj;
+					});
 					this.panel?.webview.postMessage({
 						command: 'queryResult',
 						result: {
-							rows: result.rows,
+							rows,
 							rowCount: result.rowCount,
-							fields: result.fields?.map((f: any) => f.name)
+							fields
 						}
 					});
 				} catch (error) {

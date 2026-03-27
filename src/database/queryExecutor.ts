@@ -45,6 +45,18 @@ export class QueryExecutor {
 	}
 
 	/**
+	 * Execute a query and return rows in positional-array form (rowMode: 'array').
+	 * This preserves values even when multiple columns share the same name (e.g. constants -> ?column?).
+	 */
+	async executeQueryArray(query: string): Promise<{ rows: any[][]; rowCount: number; fields: any[] }> {
+		const client = this.connectionManager.getActiveConnection();
+		if (!client) {
+			throw new Error('No active database connection');
+		}
+		return this.executeQueryArrayOnClient(client, query);
+	}
+
+	/**
 	 * Execute a query on a specific pg.Client (without changing the active connection).
 	 */
 	async executeQueryOnClient(client: pg.Client, query: string): Promise<QueryResult> {
@@ -54,6 +66,28 @@ export class QueryExecutor {
 				const result = await client.query(query);
 				return {
 					rows: result.rows,
+					rowCount: result.rowCount || 0,
+					fields: result.fields
+				};
+			} catch (error) {
+				throw new Error(`Query execution failed: ${error}`);
+			}
+		});
+	}
+
+	/**
+	 * Execute a query on a specific pg.Client and return rows as arrays (rowMode: 'array').
+	 */
+	async executeQueryArrayOnClient(
+		client: pg.Client,
+		query: string
+	): Promise<{ rows: any[][]; rowCount: number; fields: any[] }> {
+		return this.enqueueOnClient(client, async () => {
+			try {
+				// pg typings don't strongly type rowMode in all versions; cast to any to keep compatibility.
+				const result = await client.query({ text: query, rowMode: 'array' } as any);
+				return {
+					rows: (result.rows as any[]) as any[][],
 					rowCount: result.rowCount || 0,
 					fields: result.fields
 				};

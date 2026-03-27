@@ -131,6 +131,25 @@ export class ExecuteSqlFileCommand {
 						cancellable: false,
 					},
 					async () => {
+						const buildUniqueColumns = (fieldNames: string[] | undefined) => {
+							const names = fieldNames ?? [];
+							const used = new Map<string, number>();
+							return names.map((n, i) => {
+								let base = (n ?? '').trim();
+								if (!base || base === '?column?') base = `Column${i}`;
+								const count = used.get(base) ?? 0;
+								used.set(base, count + 1);
+								return count === 0 ? base : `${base}_${count + 1}`;
+							});
+						};
+
+						const rowsArrayToObjects = (rows: any[][], columns: string[]) =>
+							rows.map(r => {
+								const obj: any = {};
+								for (let i = 0; i < columns.length; i++) obj[columns[i]] = r[i];
+								return obj;
+							});
+
 						// Execute all statements; show results for the last SELECT-like one
 						let lastResult: any = null;
 						let lastSchema = 'public';
@@ -138,19 +157,28 @@ export class ExecuteSqlFileCommand {
 
 						for (let idx = 0; idx < statements.length; idx++) {
 							const stmt = statements[idx];
-							const result = await queryExecutor.executeQuery(stmt);
+							// Use array row mode so we don't lose values when column names repeat (?column?).
+							const result = await queryExecutor.executeQueryArray(stmt);
+							const fieldNames = result.fields?.map((f: any) => f.name) ?? [];
+							const columns = buildUniqueColumns(fieldNames);
+							const objectRows = rowsArrayToObjects(result.rows ?? [], columns);
+							const normalized = {
+								rows: objectRows,
+								rowCount: result.rowCount,
+								fields: columns.map(name => ({ name }))
+							};
 
 							// Track the last result that returned rows
-							if (result.rows && result.rows.length > 0) {
-								lastResult = result;
+							if (normalized.rows && normalized.rows.length > 0) {
+								lastResult = normalized;
 								const tableMatch = stmt.match(/FROM\s+(?:"?(\w+)"?\.)?"?(\w+)"?/i);
 								if (tableMatch) {
 									lastSchema = tableMatch[1] || 'public';
 									lastTable = tableMatch[2];
 								}
-							} else if (result.rowCount !== undefined && idx === statements.length - 1) {
+							} else if (normalized.rowCount !== undefined && idx === statements.length - 1) {
 								// Last statement returned no rows (INSERT/UPDATE/DELETE etc.)
-								lastResult = result;
+								lastResult = normalized;
 							}
 						}
 

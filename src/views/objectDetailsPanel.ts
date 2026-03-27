@@ -197,7 +197,8 @@ export class ObjectDetailsPanel {
 								ch.pkVal === null
 									? `UPDATE ${tableSql} SET ${colSql} = ${escapedVal} WHERE ${pkColSql} IS NULL`
 									: `UPDATE ${tableSql} SET ${colSql} = ${escapedVal} WHERE ${pkColSql} = ${escapedPk}`
-							);
+							
+								);
 						}
 						panel.webview.postMessage({ command: 'rowChangesApplied' });
 						vscode.window.showInformationMessage(`✓ ${changes.length} change(s) saved`);
@@ -908,7 +909,9 @@ require(['vs/editor/editor.main'],function(){
 		lineNumbers:'on',
 		renderWhitespace:'none',
 		scrollBeyondLastLine:false,
-		renderSideBySide:true,
+		renderSideBySide:false,
+		renderIndicators:true,
+		originalEditable:false,
 	});
 	diffEditor.setModel({original: originalModel, modified: modifiedModel});
 

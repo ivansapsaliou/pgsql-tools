@@ -23,6 +23,10 @@ export class ConnectionWebview {
 		this.panel.webview.html = this.getHtml();
 
 		this.panel.webview.onDidReceiveMessage(async (message) => {
+			if (message.command === 'close') {
+				this.panel?.dispose();
+				return;
+			}
 			if (message.command === 'addConnection') {
 				const raw = message.config;
 
@@ -72,9 +76,9 @@ export class ConnectionWebview {
 	body {
 		font-family: var(--vscode-font-family);
 		font-size: var(--vscode-font-size);
-		background: var(--vscode-editor-background);
+		background: transparent;
 		color: var(--vscode-foreground);
-		padding: 24px;
+		padding: 0;
 	}
 
 	h2 {
@@ -94,13 +98,37 @@ export class ConnectionWebview {
 		border-bottom: 1px solid var(--vscode-panel-border);
 	}
 
-	.form-container {
-		background: var(--vscode-sideBar-background);
-		border: 1px solid var(--vscode-panel-border);
-		border-radius: 4px;
-		padding: 20px;
-		max-width: 520px;
+	/* Modal overlay look */
+	.overlay {
+		position: fixed;
+		inset: 0;
+		background: rgba(0,0,0,0.55);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 24px;
 	}
+	.form-container {
+		background: var(--vscode-editor-background);
+		border: 1px solid var(--vscode-panel-border);
+		border-radius: 6px;
+		padding: 18px 18px 16px;
+		width: min(620px, 96vw);
+		box-shadow: 0 10px 30px rgba(0,0,0,.45);
+	}
+
+	.modal-hd {
+		display:flex;
+		align-items:center;
+		justify-content:space-between;
+		gap:12px;
+		margin-bottom: 10px;
+	}
+	.modal-x{
+		background:none;border:none;color:var(--vscode-foreground);
+		cursor:pointer;font-size:18px;opacity:.7;line-height:1;
+	}
+	.modal-x:hover{opacity:1}
 
 	.form-group { margin-bottom: 12px; }
 
@@ -199,8 +227,12 @@ export class ConnectionWebview {
 </style>
 </head>
 <body>
-<div class="form-container">
-	<h2>Add PostgreSQL Connection</h2>
+<div class="overlay" id="overlay">
+<div class="form-container" role="dialog" aria-modal="true" aria-label="Add PostgreSQL Connection">
+	<div class="modal-hd">
+		<h2 style="margin:0">Add PostgreSQL Connection</h2>
+		<button class="modal-x" id="closeBtn" aria-label="Close">&times;</button>
+	</div>
 	<form id="form">
 
 		<!-- ── Основные настройки ── -->
@@ -286,9 +318,19 @@ export class ConnectionWebview {
 		<div class="error-msg" id="errorMsg"></div>
 	</form>
 </div>
+</div>
 
 <script>
 const vscode = acquireVsCodeApi();
+
+// Close behavior
+document.getElementById('closeBtn').addEventListener('click', ()=> vscode.postMessage({ command: 'close' }));
+document.getElementById('overlay').addEventListener('click', (e)=> {
+	if (e && e.target && e.target.id === 'overlay') {
+		vscode.postMessage({ command: 'close' });
+	}
+});
+document.addEventListener('keydown', (e)=> { if(e.key === 'Escape'){ vscode.postMessage({ command:'close' }); } });
 
 // ── SSH toggle ──
 document.getElementById('sshToggle').addEventListener('change', function() {
