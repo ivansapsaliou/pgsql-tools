@@ -1,124 +1,147 @@
-# PostgreSQL Tools
+# PostgreSQL Tools (VS Code Extension)
 
-A VS Code extension for managing PostgreSQL databases — query execution, schema introspection, ER diagrams, schema diff, and database health diagnostics.
+## Русский
 
-## Features
+**PostgreSQL Tools** — расширение для VS Code для работы с PostgreSQL: подключения, обозреватель объектов, выполнение SQL, ER-диаграмма, сравнение схем, диагностика и `EXPLAIN`.
 
-- 🔌 **Connection Management**: Easy connection to PostgreSQL databases
-- 📦 **Database Explorer**: Browse databases, schemas, and tables
-- 🔍 **SQL Query Execution**: Execute SQL queries and view results in the interactive Results Panel
-- 💾 **Connection Persistence**: Save connection configurations securely
-- 🔀 **Schema Diff**: Compare schemas between two databases or two schemas in the same DB
-- 🗺️ **ER Diagram**: Visualise table relationships as an ER diagram (with Mermaid export)
-- 🏥 **Health Diagnostics**: Slow queries, locks, table sizes, vacuum recommendations
-- ⚡ **Explain Query**: Run `EXPLAIN [ANALYZE] [BUFFERS]` and visualise the query plan
+### Возможности
 
-## Installation
+- **Подключения**: создание/выбор/подключение/отключение и удаление подключений
+- **Дерево БД**: базы/схемы/таблицы/представления/функции/процедуры в панели **PostgreSQL Tools**
+- **Выполнение SQL**: запуск SQL из редактора и просмотр результатов в панели **Query Results**
+- **ER Diagram**: визуализация связей по внешним ключам + экспорт Mermaid
+- **Schema Diff**: сравнение схем (БД vs БД или схема vs схема)
+- **Health (диагностика)**: медленные запросы, блокировки, размеры таблиц/индексов, рекомендации VACUUM/ANALYZE
+- **Explain Query**: `EXPLAIN`/`EXPLAIN ANALYZE` (опционально `BUFFERS`) с визуализацией плана
 
-1. Clone the repository
-2. Run `npm install` to install dependencies
-3. Press `F5` to launch the extension in development mode
+### Быстрый старт (разработка)
 
-## Usage
+1. Установите **Node.js LTS**
+2. В корне проекта:
 
-### Add a Connection
-1. Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`)
-2. Type **PostgreSQL: Add Connection**
-3. Fill in your connection details and click **Connect**
+```bash
+npm install
+npm run compile
+```
 
-### View Database Structure
-- Expand connections in the **PostgreSQL Databases** sidebar
-- Navigate through schemas and tables
+3. Нажмите `F5` в VS Code (Extension Development Host)
 
-### Execute Queries
-- Open a `.sql` file and press `Ctrl+Shift+E` / `Cmd+Shift+E` to execute
-- Or use **PostgreSQL: Execute SQL File** from the Command Palette
-- Results appear in the **Query Results** panel at the bottom
+### Сборка VSIX (для установки)
 
----
+1. Установите упаковщик:
 
-## Schema Introspection & Generation
+```bash
+npm i -g @vscode/vsce
+```
 
-### Schema Diff
-**Command**: `PostgreSQL: Schema Diff…`  
-Compare schema objects (tables, columns, indexes, constraints, enums, views) and see what was added, removed, or changed.
+2. В корне проекта:
 
-Two modes:
-- **DB vs DB** — pick two active connections and a schema name to compare across databases
-- **Schema vs Schema** — pick one connection, then two schema names within the same database
+```bash
+npm install
+npm run compile
+vsce package
+```
 
-Results display in the Results Panel as a colour-coded diff table.
+В результате появится файл `pgsql-tools-<version>.vsix`.
 
-### ER Diagram
-**Command**: `PostgreSQL: Show ER Diagram`  
-Generates an ER diagram from foreign-key relationships in the selected schema.
+### Использование
 
-1. Pick a connection
-2. Pick a schema (defaults to `public`)
-3. The Results Panel shows:
-   - Visual table cards with columns (PK/FK badges) and FK references
-   - Mermaid diagram code you can copy and open at [mermaid.live](https://mermaid.live)
+#### Добавить подключение
 
----
+- Откройте палитру команд (`Ctrl+Shift+P`) и выполните **PostgreSQL: Add Connection**
 
-## Health / Diagnostics
+#### Выполнить SQL
 
-All commands show results in the Results Panel.
+- В `.sql` файле:
+  - **F9** или **Ctrl+Shift+E** — `PostgreSQL: Execute SQL (F9)`
+  - Результаты появятся в панели **Query Results**
 
-### Slow Queries
-**Command**: `PostgreSQL: Health — Slow Queries`  
-Requires the `pg_stat_statements` extension. Shows the top N queries by mean execution time.  
-If the extension is not installed, the panel shows instructions on how to enable it.
+#### Explain Query
 
-### Locks
-**Command**: `PostgreSQL: Health — Locks`  
-Shows blocking/waiting processes — blocked PID, blocking PID, queries, and how long the block has been active.
+- В SQL-редакторе: **Ctrl+Shift+X** — `PostgreSQL: Explain Query`
 
-### Table & Index Sizes
-**Command**: `PostgreSQL: Health — Table & Index Sizes`  
-Shows total, table-only, and index-only sizes for the largest tables (configurable limit).
+#### Основные команды (палитра команд)
 
-### Vacuum / Analyze Recommendations
-**Command**: `PostgreSQL: Health — Vacuum / Analyze`  
-Based on `pg_stat_user_tables` statistics, flags tables that need `VACUUM` or `ANALYZE`.
+- `PostgreSQL: Add Connection`
+- `PostgreSQL: Connect` / `PostgreSQL: Disconnect` / `PostgreSQL: Select Connection`
+- `PostgreSQL: Refresh`
+- `PostgreSQL: Search in Tree…` / `PostgreSQL: Clear Tree Search`
+- `PostgreSQL: Open Query Editor` / `PostgreSQL: Open Query File`
+- `PostgreSQL: Schema Diff…`
+- `PostgreSQL: Show ER Diagram`
+- `PostgreSQL: Database Health` (+ отдельные команды Health)
 
----
+### Примечания
 
-## Explain Query
-**Command**: `PostgreSQL: Explain Query`  
-**Keyboard shortcut**: `Ctrl+Shift+X` / `Cmd+Shift+X` (when SQL editor is focused)
+- **Хранение секретов**: пароль хранится в **VS Code SecretStorage**, остальная конфигурация — в global state VS Code.
+- **Slow Queries**: для диагностики медленных запросов нужен модуль PostgreSQL `pg_stat_statements`.
 
-1. Select SQL in the active editor, or enter it in the prompt
-2. Choose **EXPLAIN only** or **EXPLAIN ANALYZE**
-3. Optionally add **BUFFERS** statistics
-4. The Results Panel shows:
-   - The query plan as an expandable tree (Node Type, estimated/actual cost, rows)
-   - The raw JSON plan for detailed inspection
+### Требования
+
+- VS Code **1.75.0+**
+- PostgreSQL **9.5+**
 
 ---
 
-## Toolbar Buttons
+## English
 
-New buttons are added to the **PostgreSQL Tools** sidebar panel headers:
+**PostgreSQL Tools** is a VS Code extension for PostgreSQL: connections, object explorer, SQL execution, ER diagram, schema diff, health diagnostics, and `EXPLAIN`.
 
-| View | Button |
-|------|--------|
-| Connections | $(diff) Schema Diff, $(type-hierarchy) ER Diagram |
-| Database Objects | $(diff) Schema Diff, $(type-hierarchy) ER Diagram |
+### Features
 
-Right-click on a connection to access **Show ER Diagram** and **Schema Diff** context actions.
+- **Connections**: create/select/connect/disconnect and delete connections
+- **Database tree**: browse objects in the **PostgreSQL Tools** view
+- **Run SQL**: execute SQL from the editor and see results in **Query Results**
+- **ER Diagram**: FK-based relationships + Mermaid export
+- **Schema Diff**: compare schemas (DB vs DB or schema vs schema)
+- **Health**: slow queries, locks, table/index sizes, VACUUM/ANALYZE recommendations
+- **Explain Query**: `EXPLAIN` / `EXPLAIN ANALYZE` (optionally `BUFFERS`) with plan visualization
 
----
+### Quick start (development)
 
-## Configuration
+1. Install **Node.js LTS**
+2. In the project root:
 
-Connection details are securely stored in VS Code's global state. Passwords are kept in VS Code's SecretStorage.
+```bash
+npm install
+npm run compile
+```
 
-## Requirements
+3. Press `F5` in VS Code (Extension Development Host)
 
-- VS Code 1.75.0 or higher
-- PostgreSQL 9.5 or higher
-- For slow query diagnostics: `pg_stat_statements` extension must be enabled in PostgreSQL
+### Build a VSIX package
+
+1. Install the packager:
+
+```bash
+npm i -g @vscode/vsce
+```
+
+2. In the project root:
+
+```bash
+npm install
+npm run compile
+vsce package
+```
+
+This produces `pgsql-tools-<version>.vsix`.
+
+### Usage
+
+- **Add connection**: Command Palette → **PostgreSQL: Add Connection**
+- **Execute SQL**: `F9` or `Ctrl+Shift+E` in a `.sql` file → results in **Query Results**
+- **Explain**: `Ctrl+Shift+X` in SQL editor → `PostgreSQL: Explain Query`
+
+### Notes
+
+- **Secrets**: passwords are stored in **VS Code SecretStorage**; other connection data is stored in VS Code global state.
+- **Slow queries**: requires PostgreSQL `pg_stat_statements`.
+
+### Requirements
+
+- VS Code **1.75.0+**
+- PostgreSQL **9.5+**
 
 ## License
 
