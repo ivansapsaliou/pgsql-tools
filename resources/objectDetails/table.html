@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="UTF-8">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src __CSP_SOURCE__ data: https:; style-src __CSP_SOURCE__ 'unsafe-inline' https://cdnjs.cloudflare.com https://*.vscode-cdn.net; script-src 'nonce-__NONCE__' https://cdnjs.cloudflare.com; font-src __CSP_SOURCE__ data: https:; connect-src https:;">
+	<script nonce="__NONCE__" src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
+	<link rel="stylesheet" href="__TABLE_CSS_URI__">
+</head>
+<body>
+<div class="tabs">
+	<div class="tab active" data-tab="columns">Columns <span class="tab-count">__COLUMN_COUNT__</span></div>
+	<div class="tab" data-tab="keys">Keys <span class="tab-count">__KEYS_COUNT__</span></div>
+	<div class="tab" data-tab="checks">Checks <span class="tab-count">__CHECKS_COUNT__</span></div>
+	<div class="tab" data-tab="indexes">Indexes <span class="tab-count">__INDEXES_COUNT__</span></div>
+	<div class="tab" data-tab="data">Data</div>
+	<div class="tab" data-tab="ddl">DDL</div>
+</div>
+
+<div class="content">
+<div class="tab-pane active" id="columns-pane">
+	<div class="toolbar">
+		<button class="btn-act" id="addColBtn" title="Add column">+</button>
+		<button class="btn-act danger" id="deleteColBtn" disabled title="Delete selected column">−</button>
+		<button class="btn-act" id="editColBtn" disabled title="Edit selected column">✎</button>
+		<div class="sw"><span class="si">⌕</span><input class="sinput" id="colSearch" placeholder="Filter columns..." autocomplete="off"></div>
+	</div>
+	<div class="tscroll">
+		<table><thead><tr><th>Column</th><th>Type</th><th>Flags</th><th>Default</th><th>References</th><th>Comment</th></tr></thead>
+		<tbody id="colBody">__COLUMNS_TAB_HTML__</tbody></table>
+	</div>
+</div>
+
+<div class="tab-pane" id="ddl-pane"><div id="ddlEditor"></div></div>
+
+<div class="tab-pane" id="keys-pane">
+	<div class="tscroll">
+		<div class="sec-h">Key constraints (PK / UNIQUE)</div>
+		<table><thead><tr><th>Name</th><th>Type</th><th>Columns</th><th>Definition</th></tr></thead><tbody>__KEY_CONSTRAINTS_HTML__</tbody></table>
+		<div class="sec-h" style="margin-top:1px">Foreign keys</div>
+		<div class="sec-h">Outgoing (this → other)</div>
+		<table><thead><tr><th>Constraint</th><th>Columns</th><th>References</th><th>Ref. Columns</th></tr></thead><tbody>__OUTGOING_FK_HTML__</tbody></table>
+		<div class="sec-h" style="margin-top:1px">Incoming (other → this)</div>
+		<table><thead><tr><th>Constraint</th><th>Ref. Columns</th><th>From Table</th><th>Columns</th></tr></thead><tbody>__INCOMING_FK_HTML__</tbody></table>
+	</div>
+</div>
+
+<div class="tab-pane" id="checks-pane"><div class="tscroll"><table><thead><tr><th>Name</th><th>Columns</th><th>Definition</th></tr></thead><tbody>__CHECKS_HTML__</tbody></table></div></div>
+<div class="tab-pane" id="data-pane">
+	<div class="toolbar">
+		<div class="sw"><span class="si">⌕</span><input class="sinput" id="dataSearch" placeholder="Search rows..." autocomplete="off"></div>
+		<button class="btn-inline" id="addRowBtn">+ Row</button>
+		<button class="btn-inline danger" id="deleteRowsBtn" disabled>− Delete</button>
+		<label style="display:flex;align-items:center;gap:4px;font-size:11px;flex-shrink:0"><span style="opacity:.5">Limit:</span><input type="text" class="sinput" id="dataLimit" value="1000" style="width:60px;text-align:right;padding-left:8px"></label>
+		<span id="changesGroup" style="display:none;align-items:center;gap:5px"><span class="changes-badge" id="changesBadge">0</span><span style="font-size:11px;opacity:.6">changed</span><button class="btn-inline" id="applyChangesBtn">✓ Apply</button><button class="btn-inline danger" id="discardChangesBtn">✕ Discard</button></span>
+		<span class="row-info" id="rowInfo">—</span>
+	</div>
+	<div class="tscroll" id="dataScroll"><table id="dataTable"><thead><tr><th class="row-num">#</th>__DATA_HEADER_HTML__</tr></thead><tbody id="dataBody"></tbody></table></div>
+	<div class="pag" id="dataPag" style="display:none"><button class="pbtn" id="prevPage" disabled>‹</button><span id="pageButtons"></span><button class="pbtn" id="nextPage">›</button><span class="pinfo" id="pagInfo"></span></div>
+</div>
+<div class="tab-pane" id="indexes-pane"><div class="tscroll"><table><thead><tr><th>Name</th><th>Columns</th><th>Type</th><th class="center">Unique</th><th class="center">Primary</th></tr></thead><tbody>__INDEXES_HTML__</tbody></table></div></div>
+</div>
+
+<div id="addModal" class="modal-ov" style="display:none">
+	<div class="modal">
+		<div class="modal-hd"><span class="modal-title" id="modalTitle">Add Column</span><button class="modal-x" id="closeModal">&times;</button></div>
+		<div class="modal-bd">
+			<div class="fg"><label>Column Name</label><input type="text" id="nc-name" class="fi" placeholder="column_name"></div>
+			<div class="fg"><label>Data Type</label><select id="nc-type" class="fs"><option>VARCHAR(255)</option><option>INTEGER</option><option>BIGINT</option><option>TEXT</option><option>BOOLEAN</option><option>DATE</option><option>TIMESTAMP</option><option>NUMERIC</option><option>REAL</option><option>UUID</option><option>JSONB</option><option>BYTEA</option></select></div>
+			<div class="fg"><label><input type="checkbox" id="nc-notnull"> NOT NULL</label></div>
+			<div class="fg"><label>Default Value</label><input type="text" id="nc-default" class="fi" placeholder="Optional"></div>
+			<div class="fg"><label>Comment</label><input type="text" id="nc-comment" class="fi" placeholder="Optional"></div>
+		</div>
+		<div class="modal-ft"><button type="button" class="btn-cancel" id="cancelModal">Cancel</button><button type="button" class="btn-ok" id="confirmModal">Add Column</button></div>
+	</div>
+</div>
+<div id="confirmOv" class="modal-ov" style="display:none">
+	<div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMsg">
+		<div class="modal-hd"><span class="modal-title" id="confirmTitle">Confirm</span><button class="modal-x" id="confirmClose" aria-label="Close">&times;</button></div>
+		<div class="modal-bd"><div id="confirmMsg" style="white-space:pre-wrap;line-height:1.35"></div></div>
+		<div class="modal-ft"><button type="button" class="btn-cancel" id="confirmCancel">Cancel</button><button type="button" class="btn-ok" id="confirmOk">OK</button></div>
+	</div>
+</div>
+
+<script nonce="__NONCE__">
+window.__PGTOOLS__ = {
+	ddl: __DDL_JSON__,
+	pkCol: __PK_COL_JSON__,
+	allColumns: __ALL_COLUMNS_JSON__
+};
+</script>
+<script nonce="__NONCE__" src="__TABLE_JS_URI__"></script>
+</body>
+</html>

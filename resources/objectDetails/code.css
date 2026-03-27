@@ -1,0 +1,67 @@
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;font-family:var(--vscode-font-family);
+	font-size:var(--vscode-font-size,13px);background:var(--vscode-editor-background);
+	color:var(--vscode-foreground);display:flex;flex-direction:column;overflow:hidden}
+.header{display:flex;align-items:center;gap:8px;padding:6px 12px;
+	background:var(--vscode-editorGroupHeader-tabsBackground);
+	border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0}
+.header-title{font-size:13px;font-weight:600}
+.badge{font-size:11px;opacity:.55;background:var(--vscode-badge-background);
+	color:var(--vscode-badge-foreground);padding:1px 7px;border-radius:10px}
+.content{flex:1;overflow:hidden;display:flex;flex-direction:column}
+#ddlEditor{
+	flex:1;
+	background:var(--vscode-editor-background);
+	color:var(--vscode-editor-foreground);
+}
+.tabs{display:flex;background:var(--vscode-editorGroupHeader-tabsBackground);
+	border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0;padding:0 4px}
+.tab{padding:6px 14px;font-size:12px;font-weight:500;cursor:pointer;
+	border-bottom:2px solid transparent;color:var(--vscode-foreground);opacity:.65;user-select:none}
+.tab.active{opacity:1;border-bottom-color:var(--vscode-focusBorder);color:var(--vscode-textLink-foreground)}
+.tab-pane{display:none;flex:1;overflow:hidden;flex-direction:column}
+.tab-pane.active{display:flex}
+.toolbar{display:flex;align-items:center;gap:8px;padding:4px 10px;
+	background:var(--vscode-editorGroupHeader-tabsBackground);
+	border-bottom:1px solid var(--vscode-panel-border);flex-shrink:0}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;
+	background:var(--vscode-button-background);color:var(--vscode-button-foreground);
+	border:none;border-radius:2px;font-family:inherit;font-size:11px;cursor:pointer;height:24px}
+.btn:hover:not(:disabled){background:var(--vscode-button-hoverBackground)}
+.btn:disabled{opacity:.35;cursor:default}
+.state{font-size:11px;opacity:.6}
+.modal-ov{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;
+	align-items:center;justify-content:center;z-index:1000}
+.modal{background:var(--vscode-editor-background);border:1px solid var(--vscode-panel-border);
+	border-radius:4px;min-width:340px;max-width:90%;box-shadow:0 4px 16px rgba(0,0,0,.4)}
+.modal-wide{width:min(980px,94vw)}
+.modal-hd{display:flex;align-items:center;justify-content:space-between;
+	padding:10px 14px;border-bottom:1px solid var(--vscode-panel-border)}
+.modal-title{font-weight:600;font-size:13px}
+.modal-x{background:none;border:none;color:var(--vscode-foreground);cursor:pointer;font-size:18px;opacity:.6}
+.modal-x:hover{opacity:1}
+.modal-bd{padding:14px}
+.modal-ft{display:flex;justify-content:flex-end;gap:8px;padding:10px 14px;
+	border-top:1px solid var(--vscode-panel-border)}
+.btn-cancel{padding:5px 12px;background:var(--vscode-button-secondaryBackground);
+	color:var(--vscode-button-secondaryForeground);border:none;border-radius:2px;cursor:pointer;font-size:12px}
+.btn-ok{padding:5px 12px;background:var(--vscode-button-background);
+	color:var(--vscode-button-foreground);border:none;border-radius:2px;cursor:pointer;font-size:12px}
+.btn-ok:hover{background:var(--vscode-button-hoverBackground)}
+.theme-dump-pre{
+	max-height:58vh;
+	overflow:auto;
+	padding:10px;
+	background:var(--vscode-editor-background);
+	color:var(--vscode-editor-foreground);
+	border:1px solid var(--vscode-panel-border);
+	border-radius:3px;
+	font-family:var(--vscode-editor-font-family,Consolas,monospace);
+	font-size:12px;
+	line-height:1.35;
+	white-space:pre;
+}
+.monaco-editor .line-modified-glyph{
+	margin-left:5px;
+	border-left:3px solid var(--vscode-gitDecoration-modifiedResourceForeground,#e2c08d);
+}

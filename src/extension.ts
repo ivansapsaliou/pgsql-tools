@@ -21,6 +21,8 @@ let sqlCompletionProvider: SQLCompletionProvider;
 let resultsViewProvider: ResultsViewProvider;
 let connectionStatusBar: vscode.StatusBarItem;
 let sqlCodeLensEmitter: vscode.EventEmitter<void>;
+const routineDdlOriginalText = new Map<string, string>();
+let routineDdlDecorationType: vscode.TextEditorDecorationType;
 
 export async function activate(context: vscode.ExtensionContext) {
 	console.log('pgsql-tools extension is now active!');
@@ -47,6 +49,16 @@ export async function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(connectionStatusBar);
 	sqlCodeLensEmitter = new vscode.EventEmitter<void>();
 	context.subscriptions.push(sqlCodeLensEmitter);
+	routineDdlDecorationType = vscode.window.createTextEditorDecorationType({
+		isWholeLine: true,
+		backgroundColor: new vscode.ThemeColor('editor.wordHighlightStrongBackground'),
+		borderWidth: '0 0 0 2px',
+		borderStyle: 'solid',
+		borderColor: new vscode.ThemeColor('gitDecoration.modifiedResourceForeground'),
+		overviewRulerColor: new vscode.ThemeColor('gitDecoration.modifiedResourceForeground'),
+		overviewRulerLane: vscode.OverviewRulerLane.Left,
+	});
+	context.subscriptions.push(routineDdlDecorationType);
 
 	const updateConnectionStatusBar = () => {
 		const activeConnection = connectionManager.getActiveConnectionName();
@@ -67,6 +79,86 @@ export async function activate(context: vscode.ExtensionContext) {
 		sqlCompletionProvider.refresh();
 		updateConnectionStatusBar();
 		refreshSqlConnectionCodeLens();
+	};
+	const computeChangedLineNumbers = (originalText: string, currentText: string): number[] => {
+		const orig = originalText.split(/\r?\n/);
+		const cur = currentText.split(/\r?\n/);
+		const n = orig.length;
+		const m = cur.length;
+		const dp: number[][] = Array.from({ length: n + 1 }, () => Array<number>(m + 1).fill(0));
+		for (let i = n - 1; i >= 0; i--) {
+			for (let j = m - 1; j >= 0; j--) {
+				dp[i][j] = orig[i] === cur[j]
+					? dp[i + 1][j + 1] + 1
+					: Math.max(dp[i + 1][j], dp[i][j + 1]);
+			}
+		}
+		const unchangedCurrentLines = new Set<number>();
+		let i = 0;
+		let j = 0;
+		while (i < n && j < m) {
+			if (orig[i] === cur[j]) {
+				unchangedCurrentLines.add(j + 1);
+				i++;
+				j++;
+				continue;
+			}
+			if (dp[i + 1][j] >= dp[i][j + 1]) {
+				i++;
+			} else {
+				j++;
+			}
+		}
+		const changed: number[] = [];
+		for (let line = 1; line <= m; line++) {
+			if (!unchangedCurrentLines.has(line)) {
+				changed.push(line);
+			}
+		}
+		return changed;
+	};
+	const updateRoutineDdlDecorations = (editor: vscode.TextEditor | undefined) => {
+		if (!editor || editor.document.languageId !== 'sql') return;
+		const key = editor.document.uri.toString();
+		const original = routineDdlOriginalText.get(key);
+		if (original === undefined) return;
+		const current = editor.document.getText();
+		if (current === original) {
+			editor.setDecorations(routineDdlDecorationType, []);
+			return;
+		}
+		const changedLines = computeChangedLineNumbers(original, current);
+		const decorations = changedLines.map((lineNo) => {
+			const line = editor.document.lineAt(Math.max(0, lineNo - 1));
+			return new vscode.Range(line.lineNumber, 0, line.lineNumber, line.text.length);
+		});
+		editor.setDecorations(routineDdlDecorationType, decorations);
+	};
+	const openRoutineDdlDocument = async (
+		schema: string,
+		objectName: string,
+		objectType: 'function' | 'procedure'
+	) => {
+		try {
+			const ddl = objectType === 'function'
+				? await queryExecutor.getFunctionDDL(schema, objectName)
+				: await queryExecutor.getProcedureDDL(schema, objectName);
+			const fileName = `${objectName}.sql`;
+			const uri = vscode.Uri.from({ scheme: 'untitled', path: `/${fileName}` });
+			const doc = await vscode.workspace.openTextDocument(uri);
+			const editor = await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+			if (doc.getText().length === 0) {
+				await editor.edit((editBuilder) => {
+					editBuilder.insert(new vscode.Position(0, 0), ddl);
+				});
+			}
+			routineDdlOriginalText.set(doc.uri.toString(), doc.getText());
+			updateRoutineDdlDecorations(editor);
+			updateConnectionStatusBar();
+			refreshSqlConnectionCodeLens();
+		} catch (err) {
+			vscode.window.showErrorMessage(`Failed to open ${objectType} DDL: ${err}`);
+		}
 	};
 
 	// Results Panel (нижняя панель)
@@ -152,10 +244,14 @@ export async function activate(context: vscode.ExtensionContext) {
 					: contextValue === 'procedure' ? 'procedure' 
 					: contextValue === 'view' ? 'view'
 					: 'table';
-				ObjectDetailsPanel.show(
-					context, schema, objectName, objectType,
-					queryExecutor, connectionManager, resultsViewProvider
-				);
+				if (objectType === 'function' || objectType === 'procedure') {
+					void openRoutineDdlDocument(schema, objectName, objectType);
+				} else {
+					ObjectDetailsPanel.show(
+						context, schema, objectName, objectType,
+						queryExecutor, connectionManager, resultsViewProvider
+					);
+				}
 			}
 		}
 	});
@@ -209,6 +305,15 @@ export async function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('pgsql-tools.openQueryEditor', () => {
 			QueryEditorPanel.show(context, queryExecutor, connectionManager);
 		}),
+		vscode.commands.registerCommand('pgsql-tools.editDDL', async (node: any) => {
+			const doc = await vscode.workspace.openTextDocument({
+				language: 'sql',
+				content: '',
+			});
+			await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+			updateConnectionStatusBar();
+			refreshSqlConnectionCodeLens();
+		}),
 
 		vscode.commands.registerCommand('pgsql-tools.openQueryFile', async () => {
 			const doc = await vscode.workspace.openTextDocument({
@@ -229,10 +334,14 @@ export async function activate(context: vscode.ExtensionContext) {
 				: node.contextValue === 'procedure' ? 'procedure' 
 				: node.contextValue === 'view' ? 'view'
 				: 'table';
-			await ObjectDetailsPanel.show(
-				context, schema, objectName, objectType,
-				queryExecutor, connectionManager, resultsViewProvider
-			);
+			if (objectType === 'function' || objectType === 'procedure') {
+				await openRoutineDdlDocument(schema, objectName, objectType);
+			} else {
+				await ObjectDetailsPanel.show(
+					context, schema, objectName, objectType,
+					queryExecutor, connectionManager, resultsViewProvider
+				);
+			}
 		}),
 
 		// ── Refresh ──────────────────────────────────────────────────────────
@@ -311,6 +420,18 @@ export async function activate(context: vscode.ExtensionContext) {
 		if (event.document.languageId === 'sql') {
 			refreshSqlConnectionCodeLens();
 		}
+		const editor = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === event.document.uri.toString());
+		if (editor) {
+			updateRoutineDdlDecorations(editor);
+		}
+	});
+	const visibleEditorsListener = vscode.window.onDidChangeVisibleTextEditors((editors) => {
+		for (const editor of editors) {
+			updateRoutineDdlDecorations(editor);
+		}
+	});
+	const closeDocumentListener = vscode.workspace.onDidCloseTextDocument((doc) => {
+		routineDdlOriginalText.delete(doc.uri.toString());
 	});
 
 	updateConnectionStatusBar();
@@ -320,7 +441,9 @@ export async function activate(context: vscode.ExtensionContext) {
 		visibilityListener,
 		activeEditorListener,
 		openDocumentListener,
-		changeDocumentListener
+		changeDocumentListener,
+		visibleEditorsListener,
+		closeDocumentListener
 	);
 }
 

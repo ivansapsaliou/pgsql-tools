@@ -75,6 +75,10 @@
 				"title": "PostgreSQL: View Table Details"
 			},
 			{
+				"command": "pgsql-tools.editDDL",
+				"title": "PostgreSQL: Edit DDL"
+			},
+			{
 				"command": "pgsql-tools.refreshDatabases",
 				"title": "PostgreSQL: Refresh",
 				"icon": "$(refresh)"
@@ -250,6 +254,11 @@
 					"command": "pgsql-tools.viewTableDetails",
 					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == view || viewItem == function || viewItem == procedure)",
 					"group": "context@5"
+				},
+				{
+					"command": "pgsql-tools.editDDL",
+					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == view || viewItem == function || viewItem == procedure)",
+					"group": "context@6"
 				}
 			],
 			"commandPalette": [
