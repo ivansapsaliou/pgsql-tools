@@ -13,6 +13,11 @@ import { SchemaDiffCommand } from './commands/schemaDiff';
 import { ShowERDCommand } from './commands/showERD';
 import { HealthCommands } from './commands/healthCommands';
 import { ExplainQueryCommand } from './commands/explainQuery';
+import { GitDdlDocumentProvider } from './git/gitDocumentProvider';
+import { GitDdlFileDecorationProvider } from './git/gitFileDecorationProvider';
+import { GitStatusCache } from './git/gitStatusCache';
+import { getGitRepositoryPath } from './git/gitPaths';
+import { registerGitDdlCommands } from './commands/gitDdlCommands';
 
 let connectionManager: ConnectionManager;
 let databaseTreeProvider: PostgreSQLTreeDataProvider;
@@ -21,6 +26,8 @@ let sqlCompletionProvider: SQLCompletionProvider;
 let resultsViewProvider: ResultsViewProvider;
 let connectionStatusBar: vscode.StatusBarItem;
 let sqlCodeLensEmitter: vscode.EventEmitter<void>;
+let gitStatusCache: GitStatusCache;
+let gitFileWatcher: vscode.FileSystemWatcher | undefined;
 const routineDdlOriginalText = new Map<string, string>();
 let routineDdlDecorationType: vscode.TextEditorDecorationType;
 
@@ -33,11 +40,59 @@ export async function activate(context: vscode.ExtensionContext) {
 	sqlCompletionProvider = new SQLCompletionProvider(queryExecutor, connectionManager);
 	resultsViewProvider = new ResultsViewProvider(context.extensionUri);
 
+	const gitDocumentProvider = new GitDdlDocumentProvider();
+	gitDocumentProvider.register(context);
+	const gitFileDecorationProvider = new GitDdlFileDecorationProvider();
+	gitFileDecorationProvider.register(context);
+	gitStatusCache = new GitStatusCache(
+		connectionManager,
+		queryExecutor,
+		gitDocumentProvider,
+		gitFileDecorationProvider
+	);
+	databaseTreeProvider.setGitStatusCache(gitStatusCache);
+	context.subscriptions.push(gitStatusCache);
+	gitStatusCache.onDidUpdate(() => databaseTreeProvider.refresh());
+	registerGitDdlCommands(context, gitStatusCache);
+
+	const installGitFileWatcher = () => {
+		gitFileWatcher?.dispose();
+		gitFileWatcher = undefined;
+		const root = getGitRepositoryPath();
+		if (!root) {
+			return;
+		}
+		const pattern = new vscode.RelativePattern(
+			vscode.Uri.file(root),
+			'{Tables,tables,Function,function,Procedures,procedures}/**/*.sql'
+		);
+		gitFileWatcher = vscode.workspace.createFileSystemWatcher(pattern);
+		const onFsChange = () => {
+			void gitStatusCache.reloadIndexer().then(() => gitStatusCache.scheduleRefresh());
+		};
+		gitFileWatcher.onDidChange(onFsChange);
+		gitFileWatcher.onDidCreate(onFsChange);
+		gitFileWatcher.onDidDelete(onFsChange);
+	};
+	installGitFileWatcher();
+	context.subscriptions.push({ dispose: () => gitFileWatcher?.dispose() });
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeConfiguration((e) => {
+			if (e.affectsConfiguration('pgsql-tools.gitRepositoryPath')) {
+				installGitFileWatcher();
+				gitStatusCache.scheduleRefresh();
+			}
+		})
+	);
+
 	vscode.commands.executeCommand('setContext', 'pgsqlToolsActive', true);
 
 	// Восстанавливаем подключения из прошлой сессии
 	await connectionManager.restoreConnections();
 	databaseTreeProvider.refresh();
+	if (getGitRepositoryPath()) {
+		gitStatusCache.scheduleRefresh();
+	}
 	await vscode.workspace.getConfiguration('workbench').update(
 		'tree.expandMode',
 		'doubleClick',
@@ -79,6 +134,9 @@ export async function activate(context: vscode.ExtensionContext) {
 		sqlCompletionProvider.refresh();
 		updateConnectionStatusBar();
 		refreshSqlConnectionCodeLens();
+		if (getGitRepositoryPath()) {
+			gitStatusCache.scheduleRefresh();
+		}
 	};
 	const computeChangedLineNumbers = (originalText: string, currentText: string): number[] => {
 		const orig = originalText.split(/\r?\n/);

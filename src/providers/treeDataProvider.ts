@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from '../database/connectionManager';
 import { QueryExecutor } from '../database/queryExecutor';
+import type { GitStatusCache } from '../git/gitStatusCache';
 
 export type NodeKind =
 	| 'connection'
@@ -51,6 +52,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 	private _onDidDoubleClick = new vscode.EventEmitter<TreeNode>();
 	readonly onDidDoubleClick = this._onDidDoubleClick.event;
 	private queryExecutor: QueryExecutor;
+	private gitStatusCache: GitStatusCache | undefined;
 	private filterText: string = '';
 	private searchIndex:
 		| {
@@ -64,6 +66,10 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 
 	constructor(private connectionManager: ConnectionManager) {
 		this.queryExecutor = new QueryExecutor(connectionManager);
+	}
+
+	setGitStatusCache(cache: GitStatusCache): void {
+		this.gitStatusCache = cache;
 	}
 
 	// Метод для вызова события двойного клика
@@ -140,6 +146,66 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 			item.label = `● ${element.label}`;
 			item.description = '(active)';
 			item.iconPath = new vscode.ThemeIcon('database', new vscode.ThemeColor('terminal.ansiGreen'));
+		}
+
+		// Git DDL status badges
+		const gitKind = element.contextValue;
+		if (
+			this.gitStatusCache?.isEnabled() &&
+			(gitKind === 'table' || gitKind === 'function' || gitKind === 'procedure')
+		) {
+			const objectName = element.parentTable ?? String(element.label);
+			const gitStatus = this.gitStatusCache.getStatusForNode(
+				element.connectionName,
+				element.parentSchema,
+				gitKind,
+				objectName
+			);
+			if (gitStatus) {
+				element.meta = { ...element.meta, gitStatus: gitStatus.status };
+				const baseIcon = iconMap[gitKind] ?? 'circle-outline';
+				switch (gitStatus.status) {
+					case 'in_sync':
+						item.iconPath = new vscode.ThemeIcon(
+							baseIcon,
+							new vscode.ThemeColor('testing.iconPassed')
+						);
+						if (gitStatus.filePath) {
+							item.resourceUri = vscode.Uri.file(gitStatus.filePath);
+						}
+						item.tooltip = new vscode.MarkdownString(
+							`DDL совпадает с Git.\n\nФайл: \`${gitStatus.filePath ?? '—'}\``
+						);
+						break;
+					case 'diff':
+						item.iconPath = new vscode.ThemeIcon(
+							baseIcon,
+							new vscode.ThemeColor('gitDecoration.modifiedResourceForeground')
+						);
+						if (gitStatus.filePath) {
+							item.resourceUri = vscode.Uri.file(gitStatus.filePath);
+						}
+						item.tooltip = new vscode.MarkdownString(
+							`DDL в Git отличается от БД.\n\nФайл: \`${gitStatus.filePath ?? '—'}\``
+						);
+						break;
+					case 'missing_in_git':
+						item.description = '$(warning)';
+						item.iconPath = new vscode.ThemeIcon(
+							baseIcon,
+							new vscode.ThemeColor('gitDecoration.deletedResourceForeground')
+						);
+						item.tooltip = 'Файл DDL отсутствует в каталоге Git (Function / Tables / Procedures).';
+						break;
+					case 'error':
+						item.description = '$(error)';
+						item.tooltip = gitStatus.message ?? 'Ошибка сравнения с Git';
+						break;
+					case 'pending':
+						item.description = '$(sync~spin)';
+						break;
+				}
+			}
 		}
 
 		// Double-click to open table/view/function/procedure details

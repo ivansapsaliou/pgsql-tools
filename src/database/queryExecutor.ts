@@ -1,5 +1,6 @@
 import * as pg from 'pg';
 import { ConnectionManager } from './connectionManager';
+import { normalizeRoutineDollarQuotes } from '../git/gitRoutineDdl';
 
 export interface QueryResult {
 	rows: any[];
@@ -30,6 +31,8 @@ export interface ConstraintInfo {
 	columns: string[];
 	definition?: string;
 }
+
+export type GitDdlObjectKind = 'table' | 'function' | 'procedure';
 
 export class QueryExecutor {
 	private perClientQueue: WeakMap<pg.Client, Promise<void>> = new WeakMap();
@@ -142,11 +145,12 @@ export class QueryExecutor {
 	 * - Indexes: pg_get_indexdef (non-constraint indexes only)
 	 * - Table comment: obj_description
 	 */
-	async getTableDDL(schema: string, tableName: string): Promise<string> {
+	async getTableDDLOnClient(client: pg.Client, schema: string, tableName: string): Promise<string> {
 		const e = (s: string) => s.replace(/'/g, "''");
+		const eq = (q: string) => this.executeQueryOnClient(client, q);
 
 		// ── 1. Columns ────────────────────────────────────────────────────────
-		const colsRes = await this.executeQuery(`
+		const colsRes = await eq(`
 			SELECT
 				a.attname                                                   AS col,
 				pg_catalog.format_type(a.atttypid, a.atttypmod)            AS col_type,
@@ -175,7 +179,7 @@ export class QueryExecutor {
 		});
 
 		// ── 2. Constraints (PK, UNIQUE, CHECK, FK) ───────────────────────────
-		const conRes = await this.executeQuery(`
+		const conRes = await eq(`
 			SELECT
 				con.conname                                              AS name,
 				con.contype                                              AS type,
@@ -207,7 +211,7 @@ export class QueryExecutor {
 		ddl += '\n);\n';
 
 		// ── 4. Non-constraint indexes (CREATE INDEX) ──────────────────────────
-		const idxRes = await this.executeQuery(`
+		const idxRes = await eq(`
 			SELECT
 				pg_catalog.pg_get_indexdef(ix.indexrelid, 0, true)   AS indexdef,
 				i.relname                                              AS index_name
@@ -231,7 +235,7 @@ export class QueryExecutor {
 		}
 
 		// ── 5. Table comment ──────────────────────────────────────────────────
-		const commentRes = await this.executeQuery(`
+		const commentRes = await eq(`
 			SELECT obj_description(c.oid, 'pg_class') AS tbl_comment
 			FROM   pg_catalog.pg_class     c
 			JOIN   pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -256,13 +260,21 @@ export class QueryExecutor {
 		return ddl;
 	}
 
+	async getTableDDL(schema: string, tableName: string): Promise<string> {
+		const client = this.connectionManager.getActiveConnection();
+		if (!client) {
+			throw new Error('No active database connection');
+		}
+		return this.getTableDDLOnClient(client, schema, tableName);
+	}
+
 	/**
 	 * Get DDL for a function using pg_get_functiondef
 	 */
-	async getFunctionDDL(schema: string, functionName: string): Promise<string> {
+	async getFunctionDDLOnClient(client: pg.Client, schema: string, functionName: string): Promise<string> {
 		const e = (s: string) => s.replace(/'/g, "''");
 
-		const res = await this.executeQuery(`
+		const res = await this.executeQueryOnClient(client, `
 			SELECT pg_get_functiondef(p.oid) AS func_def
 			FROM pg_proc p
 			JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -275,16 +287,25 @@ export class QueryExecutor {
 			return `-- Function ${schema}.${functionName} not found`;
 		}
 
-		return res.rows[0].func_def || `-- Function definition not available`;
+		const raw = res.rows[0].func_def || `-- Function definition not available`;
+		return normalizeRoutineDollarQuotes(raw);
+	}
+
+	async getFunctionDDL(schema: string, functionName: string): Promise<string> {
+		const client = this.connectionManager.getActiveConnection();
+		if (!client) {
+			throw new Error('No active database connection');
+		}
+		return this.getFunctionDDLOnClient(client, schema, functionName);
 	}
 
 	/**
 	 * Get DDL for a procedure using pg_get_functiondef
 	 */
-	async getProcedureDDL(schema: string, procedureName: string): Promise<string> {
+	async getProcedureDDLOnClient(client: pg.Client, schema: string, procedureName: string): Promise<string> {
 		const e = (s: string) => s.replace(/'/g, "''");
 
-		const res = await this.executeQuery(`
+		const res = await this.executeQueryOnClient(client, `
 			SELECT pg_get_functiondef(p.oid) AS proc_def
 			FROM pg_proc p
 			JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -298,7 +319,32 @@ export class QueryExecutor {
 			return `-- Procedure ${schema}.${procedureName} not found`;
 		}
 
-		return res.rows[0].proc_def || `-- Procedure definition not available`;
+		const raw = res.rows[0].proc_def || `-- Procedure definition not available`;
+		return normalizeRoutineDollarQuotes(raw);
+	}
+
+	async getProcedureDDL(schema: string, procedureName: string): Promise<string> {
+		const client = this.connectionManager.getActiveConnection();
+		if (!client) {
+			throw new Error('No active database connection');
+		}
+		return this.getProcedureDDLOnClient(client, schema, procedureName);
+	}
+
+	async getObjectDdlOnClient(
+		client: pg.Client,
+		schema: string,
+		objectName: string,
+		kind: GitDdlObjectKind
+	): Promise<string> {
+		switch (kind) {
+			case 'table':
+				return this.getTableDDLOnClient(client, schema, objectName);
+			case 'function':
+				return this.getFunctionDDLOnClient(client, schema, objectName);
+			case 'procedure':
+				return this.getProcedureDDLOnClient(client, schema, objectName);
+		}
 	}
 
 	/**

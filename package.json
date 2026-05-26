@@ -14,6 +14,16 @@
 	"activationEvents": [],
 	"main": "./out/extension.js",
 	"contributes": {
+		"configuration": {
+			"title": "PostgreSQL Tools",
+			"properties": {
+				"pgsql-tools.gitRepositoryPath": {
+					"type": "string",
+					"default": "",
+					"description": "Локальный каталог с DDL (Tables / Function / Procedures). Git-операции (commit/push) выполняются отдельно. При одинаковых именах в разных схемах используется один файл на имя."
+				}
+			}
+		},
 		"viewsContainers": {
 			"activitybar": [
 				{
@@ -154,6 +164,24 @@
 				"command": "pgsql-tools.showERDFromTable",
 				"title": "PostgreSQL: Show ER Diagram from This Table",
 				"icon": "$(type-hierarchy)"
+			},
+			{
+				"command": "pgsql-tools.configureGitRepository",
+				"title": "PostgreSQL: Configure Git DDL Folder…",
+				"icon": "$(folder-opened)"
+			},
+			{
+				"command": "pgsql-tools.refreshGitStatus",
+				"title": "PostgreSQL: Refresh Git DDL Status",
+				"icon": "$(sync)"
+			},
+			{
+				"command": "pgsql-tools.showGitDdlDiff",
+				"title": "PostgreSQL: Compare with Git"
+			},
+			{
+				"command": "pgsql-tools.syncGitDdlFromDatabase",
+				"title": "PostgreSQL: Sync DDL to Git File"
 			}
 		],
 		"menus": {
@@ -209,6 +237,16 @@
 					"command": "pgsql-tools.showHealth",
 					"when": "view == pgsqlDatabases",
 					"group": "navigation@8"
+				},
+				{
+					"command": "pgsql-tools.configureGitRepository",
+					"when": "view == pgsqlDatabases",
+					"group": "navigation@9"
+				},
+				{
+					"command": "pgsql-tools.refreshGitStatus",
+					"when": "view == pgsqlDatabases",
+					"group": "navigation@10"
 				}
 			],
 			"view/item/context": [
@@ -266,6 +304,16 @@
 					"command": "pgsql-tools.editDDL",
 					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == view || viewItem == function || viewItem == procedure)",
 					"group": "context@6"
+				},
+				{
+					"command": "pgsql-tools.showGitDdlDiff",
+					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == function || viewItem == procedure)",
+					"group": "context@7"
+				},
+				{
+					"command": "pgsql-tools.syncGitDdlFromDatabase",
+					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == function || viewItem == procedure)",
+					"group": "context@8"
 				}
 			],
 			"commandPalette": [
@@ -307,6 +355,22 @@
 				},
 				{
 					"command": "pgsql-tools.explainQuery",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.configureGitRepository",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.refreshGitStatus",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.showGitDdlDiff",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.syncGitDdlFromDatabase",
 					"when": "pgsqlToolsActive"
 				}
 			]
