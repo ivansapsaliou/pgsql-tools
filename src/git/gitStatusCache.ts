@@ -173,9 +173,14 @@ export class GitStatusCache {
 		}
 		const ddl = await this.getDatabaseDdl(ref);
 		const filePath = await indexer.writeFile(ref.kind, ref.objectName, ddl);
-		const uri = buildGitDdlUri(ref.connectionName, ref.schema, ref.kind, ref.objectName);
-		this.documentProvider.setContent(uri, ddl);
-		this.cache.set(cacheKey(ref), { status: 'in_sync', filePath });
+		let onDisk = ddl;
+		try {
+			onDisk = await fs.promises.readFile(filePath, 'utf8');
+		} catch {
+			// use in-memory ddl
+		}
+		const status = ddlTextsEqual(onDisk, ddl, ref.kind) ? 'in_sync' : 'diff';
+		this.cache.set(cacheKey(ref), { status, filePath });
 		this.publishFileDecorations();
 		this.onUpdateEmitter.fire();
 		return filePath;
@@ -373,9 +378,6 @@ export class GitStatusCache {
 				ref.kind
 			);
 		}
-
-		const uri = buildGitDdlUri(ref.connectionName, ref.schema, ref.kind, ref.objectName);
-		this.documentProvider.setContent(uri, dbDdl);
 
 		if (ddlTextsEqual(fileText, dbDdl, ref.kind)) {
 			return { status: 'in_sync', filePath };

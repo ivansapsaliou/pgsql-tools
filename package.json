@@ -46,6 +46,13 @@
 					"id": "pgsqlDatabases",
 					"name": "Databases",
 					"when": "true"
+				},
+				{
+					"type": "webview",
+					"id": "pgsqlTreeSearch",
+					"name": "Search",
+					"when": "true",
+					"visibility": "collapsed"
 				}
 			],
 			"pgsql-tools-panel": [
@@ -59,7 +66,7 @@
 		"commands": [
 			{
 				"command": "pgsql-tools.searchTree",
-				"title": "PostgreSQL: Search in Tree…",
+				"title": "PostgreSQL: Focus Tree Search",
 				"icon": "$(search)"
 			},
 			{
@@ -219,34 +226,24 @@
 					"group": "navigation@1"
 				},
 				{
-					"command": "pgsql-tools.searchTree",
+					"command": "pgsql-tools.refreshDatabases",
 					"when": "view == pgsqlDatabases",
 					"group": "navigation@2"
 				},
 				{
-					"command": "pgsql-tools.clearTreeSearch",
+					"command": "pgsql-tools.openQueryFile",
 					"when": "view == pgsqlDatabases",
 					"group": "navigation@3"
 				},
 				{
-					"command": "pgsql-tools.refreshDatabases",
+					"command": "pgsql-tools.configureGitRepository",
 					"when": "view == pgsqlDatabases",
 					"group": "navigation@4"
 				},
 				{
-					"command": "pgsql-tools.openQueryFile",
-					"when": "view == pgsqlDatabases",
-					"group": "navigation@5"
-				},
-				{
-					"command": "pgsql-tools.configureGitRepository",
-					"when": "view == pgsqlDatabases",
-					"group": "navigation@6"
-				},
-				{
 					"command": "pgsql-tools.refreshGitStatus",
 					"when": "view == pgsqlDatabases",
-					"group": "navigation@7"
+					"group": "navigation@5"
 				}
 			],
 			"view/item/context": [
@@ -409,6 +406,12 @@
 				"when": "editorTextFocus && editorLangId == sql"
 			},
 			{
+				"command": "pgsql-tools.searchTree",
+				"key": "ctrl+f",
+				"mac": "cmd+f",
+				"when": "focusedView == pgsqlDatabases"
+			},
+			{
 				"command": "pgsql-tools.showHealth",
 				"key": "ctrl+shift+h",
 				"mac": "cmd+shift+h",
@@ -434,6 +437,7 @@
 		"typescript": "^4.9.4"
 	},
 	"dependencies": {
+		"@vscode/codicons": "^0.0.45",
 		"pg": "^8.11.0",
 		"ssh2": "^1.17.0"
 	}

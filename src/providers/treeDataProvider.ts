@@ -3,6 +3,7 @@ import { ConnectionManager } from '../database/connectionManager';
 import { QueryExecutor } from '../database/queryExecutor';
 import type { GitStatusCache } from '../git/gitStatusCache';
 import { gitStatusContextSuffix, withGitStatusContextValue } from '../git/gitTreeContext';
+import type { TreeSearchObjectKind, TreeSearchSettings } from '../search/treeSearchSettings';
 
 export type NodeKind =
 	| 'connection'
@@ -54,6 +55,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 	readonly onDidDoubleClick = this._onDidDoubleClick.event;
 	private queryExecutor: QueryExecutor;
 	private gitStatusCache: GitStatusCache | undefined;
+	private treeSearchSettings: TreeSearchSettings | undefined;
 	private filterText: string = '';
 	private searchIndex:
 		| {
@@ -71,6 +73,10 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 
 	setGitStatusCache(cache: GitStatusCache): void {
 		this.gitStatusCache = cache;
+	}
+
+	setTreeSearchSettings(settings: TreeSearchSettings): void {
+		this.treeSearchSettings = settings;
 	}
 
 	// Метод для вызова события двойного клика
@@ -243,7 +249,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 					),
 				];
 			}
-			const nodes = connections.map((name) => {
+			return connections.map((name) => {
 				const isConnected = this.connectionManager.isConnected(name);
 				return new TreeNode(
 					name,
@@ -256,28 +262,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 					name
 				);
 			});
-			// Search line appears only when search is used (filterRaw is non-empty)
-			if (!filterRaw) return nodes;
-
-			const searchLabel = filterRaw;
-			const searchNode = new TreeNode(
-				searchLabel,
-				vscode.TreeItemCollapsibleState.None,
-				'search',
-				undefined,
-				undefined,
-				active ?? undefined,
-				{
-					command: 'pgsql-tools.searchTree',
-					title: 'Search',
-					arguments: [],
-				}
-			);
-			return [searchNode, ...nodes];
 		}
-
-		// Search node has no children (we keep normal tree structure).
-		if (element.contextValue === 'search') return [];
 
 		// ── Connection: list schemas ──────────────────────────────────────────
 		if (element.contextValue === 'connection' || element.contextValue === 'connection_disconnected') {
@@ -775,7 +760,7 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 			`
 		);
 
-		const kindToNodeKind = (k: string): NodeKind => {
+		const kindToNodeKind = (k: string): TreeSearchObjectKind | null => {
 			switch (k) {
 				case 'table': return 'table';
 				case 'view': return 'view';
@@ -785,21 +770,40 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 				case 'type': return 'type';
 				case 'index': return 'index';
 				case 'trigger': return 'trigger';
-				default: return 'table';
+				default: return null;
 			}
 		};
 
-		return res.rows.map((r: any) => {
+		const enabledKinds = this.treeSearchSettings?.getEnabledObjectKinds();
+		const disabledSchemas = this.treeSearchSettings?.getDisabledSchemas(connName);
+
+		return res.rows
+			.filter((r: { kind?: string; schema_name?: string }) => {
+				const kind = kindToNodeKind(String(r.kind ?? ''));
+				if (!kind) {
+					return false;
+				}
+				if (enabledKinds && !enabledKinds.has(kind)) {
+					return false;
+				}
+				const schema = String(r.schema_name ?? '');
+				if (disabledSchemas?.has(schema)) {
+					return false;
+				}
+				return true;
+			})
+			.map((r: any) => {
 			const schema = String(r.schema_name ?? 'public');
 			const obj = String(r.obj_name ?? '');
 			const kind = String(r.kind ?? '');
+			const nodeKind = kindToNodeKind(kind);
 			const extra = r.extra ? String(r.extra) : '';
 			const label = extra ? `${obj} (${kind} on ${extra})` : `${obj} (${kind})`;
 
 			return new TreeNode(
 				label,
 				vscode.TreeItemCollapsibleState.None,
-				kindToNodeKind(kind),
+				nodeKind ?? 'table',
 				schema,
 				obj,
 				connName

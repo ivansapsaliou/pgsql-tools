@@ -18,6 +18,11 @@ import { GitDdlFileDecorationProvider } from './git/gitFileDecorationProvider';
 import { GitStatusCache } from './git/gitStatusCache';
 import { GitConnectionSettings } from './git/gitConnectionSettings';
 import { registerGitDdlCommands } from './commands/gitDdlCommands';
+import { TreeSearchWebviewProvider } from './views/treeSearchWebview';
+import { TreeSearchSettings } from './search/treeSearchSettings';
+import type { TreeSearchObjectKind } from './search/treeSearchSettings';
+import type { GitDdlObjectKind } from './database/queryExecutor';
+import type { TreeNode } from './providers/treeDataProvider';
 
 let connectionManager: ConnectionManager;
 let databaseTreeProvider: PostgreSQLTreeDataProvider;
@@ -29,14 +34,28 @@ let sqlCodeLensEmitter: vscode.EventEmitter<void>;
 let gitStatusCache: GitStatusCache;
 let gitConnectionSettings: GitConnectionSettings;
 let gitFileWatchers: vscode.FileSystemWatcher[] = [];
+let gitFileWatcherDebounce: ReturnType<typeof setTimeout> | undefined;
 const routineDdlOriginalText = new Map<string, string>();
+/** Ключ объекта → URI открытой вкладки DDL (редактируемый untitled). */
+const openDdlDocumentsByKey = new Map<string, string>();
 let routineDdlDecorationType: vscode.TextEditorDecorationType;
+
+function ddlDocumentKey(
+	connectionName: string,
+	schema: string,
+	objectType: GitDdlObjectKind,
+	objectName: string
+): string {
+	return `${connectionName}:${schema}:${objectType}:${objectName}`;
+}
 
 export async function activate(context: vscode.ExtensionContext) {
 	console.log('pgsql-tools extension is now active!');
 
 	connectionManager = new ConnectionManager(context);
+	const treeSearchSettings = new TreeSearchSettings(context);
 	databaseTreeProvider = new PostgreSQLTreeDataProvider(connectionManager);
+	databaseTreeProvider.setTreeSearchSettings(treeSearchSettings);
 	queryExecutor = new QueryExecutor(connectionManager);
 	sqlCompletionProvider = new SQLCompletionProvider(queryExecutor, connectionManager);
 	resultsViewProvider = new ResultsViewProvider(context.extensionUri);
@@ -72,7 +91,13 @@ export async function activate(context: vscode.ExtensionContext) {
 			);
 			const watcher = vscode.workspace.createFileSystemWatcher(pattern);
 			const onFsChange = () => {
-				void gitStatusCache.reloadIndexer().then(() => gitStatusCache.scheduleRefresh());
+				if (gitFileWatcherDebounce) {
+					clearTimeout(gitFileWatcherDebounce);
+				}
+				gitFileWatcherDebounce = setTimeout(() => {
+					gitFileWatcherDebounce = undefined;
+					void gitStatusCache.reloadIndexer().then(() => gitStatusCache.scheduleRefresh());
+				}, 400);
 			};
 			watcher.onDidChange(onFsChange);
 			watcher.onDidCreate(onFsChange);
@@ -139,7 +164,35 @@ export async function activate(context: vscode.ExtensionContext) {
 	const refreshSqlConnectionCodeLens = () => {
 		sqlCodeLensEmitter.fire();
 	};
+	const loadSchemasForConnection = async (connectionName: string): Promise<string[]> => {
+		const cached = treeSearchSettings.getCachedSchemas(connectionName);
+		if (cached.length > 0) {
+			return cached;
+		}
+		const client = connectionManager.getConnectionByName(connectionName);
+		if (!client) {
+			return [];
+		}
+		try {
+			const res = await queryExecutor.executeQueryOnClient(
+				client,
+				`
+				SELECT schema_name FROM information_schema.schemata
+				WHERE schema_name NOT LIKE 'pg\\_%' ESCAPE '\\'
+				  AND schema_name <> 'information_schema'
+				ORDER BY schema_name
+				`
+			);
+			const schemas = res.rows.map((r) => String(r.schema_name));
+			treeSearchSettings.setSchemaList(connectionName, schemas);
+			return schemas;
+		} catch {
+			return [];
+		}
+	};
+
 	const refreshConnectionUi = () => {
+		treeSearchSettings.clearSchemaCache();
 		databaseTreeProvider.refresh();
 		sqlCompletionProvider.refresh();
 		updateConnectionStatusBar();
@@ -147,6 +200,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		if (gitStatusCache.hasAnyCompareEnabled()) {
 			gitStatusCache.scheduleRefresh();
 		}
+		void treeSearchProvider?.refreshState();
 	};
 	const computeChangedLineNumbers = (originalText: string, currentText: string): number[] => {
 		const orig = originalText.split(/\r?\n/);
@@ -186,7 +240,13 @@ export async function activate(context: vscode.ExtensionContext) {
 		return changed;
 	};
 	const updateRoutineDdlDecorations = (editor: vscode.TextEditor | undefined) => {
-		if (!editor || editor.document.languageId !== 'sql') return;
+		if (!editor || editor.document.languageId !== 'sql') {
+			return;
+		}
+		const scheme = editor.document.uri.scheme;
+		if (scheme === 'pgsql-tools-git') {
+			return;
+		}
 		const key = editor.document.uri.toString();
 		const original = routineDdlOriginalText.get(key);
 		if (original === undefined) return;
@@ -202,30 +262,69 @@ export async function activate(context: vscode.ExtensionContext) {
 		});
 		editor.setDecorations(routineDdlDecorationType, decorations);
 	};
-	const openRoutineDdlDocument = async (
+	const openObjectDdlDocument = async (
+		connectionName: string,
 		schema: string,
 		objectName: string,
-		objectType: 'function' | 'procedure'
+		objectType: GitDdlObjectKind
 	) => {
 		try {
-			const ddl = objectType === 'function'
-				? await queryExecutor.getFunctionDDL(schema, objectName)
-				: await queryExecutor.getProcedureDDL(schema, objectName);
-			const fileName = `${objectName}.sql`;
-			const uri = vscode.Uri.from({ scheme: 'untitled', path: `/${fileName}` });
-			const doc = await vscode.workspace.openTextDocument(uri);
-			const editor = await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
-			if (doc.getText().length === 0) {
-				await editor.edit((editBuilder) => {
-					editBuilder.insert(new vscode.Position(0, 0), ddl);
-				});
+			const docKey = ddlDocumentKey(connectionName, schema, objectType, objectName);
+			const existingUri = openDdlDocumentsByKey.get(docKey);
+			if (existingUri) {
+				const existing = vscode.workspace.textDocuments.find(
+					(d) => d.uri.toString() === existingUri
+				);
+				if (existing) {
+					const editor = await vscode.window.showTextDocument(existing, {
+						viewColumn: vscode.ViewColumn.One,
+						preview: true,
+						preserveFocus: false,
+					});
+					if (!routineDdlOriginalText.has(existingUri)) {
+						routineDdlOriginalText.set(existingUri, existing.getText());
+					}
+					updateRoutineDdlDecorations(editor);
+					updateConnectionStatusBar();
+					refreshSqlConnectionCodeLens();
+					return;
+				}
+				openDdlDocumentsByKey.delete(docKey);
 			}
-			routineDdlOriginalText.set(doc.uri.toString(), doc.getText());
+
+			const client = connectionManager.getConnectionByName(connectionName);
+			if (!client) {
+				vscode.window.showWarningMessage(
+					`Подключение «${connectionName}» не активно. Подключитесь к БД и повторите.`
+				);
+				return;
+			}
+			const ddl = await queryExecutor.getObjectDdlOnClient(
+				client,
+				schema,
+				objectName,
+				objectType
+			);
+			// content при создании — без editor.edit, документ не помечается изменённым
+			const doc = await vscode.workspace.openTextDocument({
+				language: 'sql',
+				content: ddl,
+			});
+			const uriKey = doc.uri.toString();
+			openDdlDocumentsByKey.set(docKey, uriKey);
+			routineDdlOriginalText.set(uriKey, ddl);
+			const editor = await vscode.window.showTextDocument(doc, {
+				viewColumn: vscode.ViewColumn.One,
+				preview: true,
+				preserveFocus: false,
+			});
 			updateRoutineDdlDecorations(editor);
 			updateConnectionStatusBar();
 			refreshSqlConnectionCodeLens();
 		} catch (err) {
-			vscode.window.showErrorMessage(`Failed to open ${objectType} DDL: ${err}`);
+			vscode.window.showErrorMessage(
+				`Не удалось открыть DDL: ${err instanceof Error ? err.message : String(err)}`
+			);
 		}
 	};
 
@@ -267,11 +366,114 @@ export async function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
-	// Единое дерево
 	const databaseTreeView = vscode.window.createTreeView('pgsqlDatabases', {
 		treeDataProvider: databaseTreeProvider,
 		showCollapseAll: true,
 	});
+
+	const revealSearchMatches = async () => {
+		const term = databaseTreeProvider.getFilterText().trim();
+		if (!term) {
+			return;
+		}
+		const activeConn = connectionManager.getActiveConnectionName();
+		if (!activeConn) {
+			return;
+		}
+		const root = await databaseTreeProvider.getChildren();
+		const connNode = (root as TreeNode[]).find(
+			(n) => n?.contextValue === 'connection' && n?.label === activeConn
+		);
+		if (!connNode) {
+			return;
+		}
+		await databaseTreeView.reveal(connNode, { expand: 1, focus: false, select: false });
+		const schemas = await databaseTreeProvider.getChildren(connNode);
+		for (const schemaNode of schemas) {
+			if (schemaNode?.contextValue !== 'schema') {
+				continue;
+			}
+			await databaseTreeView.reveal(schemaNode, { expand: 1, focus: false, select: false });
+			const groups = await databaseTreeProvider.getChildren(schemaNode);
+			for (const groupNode of groups) {
+				if (!String(groupNode?.contextValue ?? '').startsWith('group_')) {
+					continue;
+				}
+				await databaseTreeView.reveal(groupNode, { expand: 1, focus: false, select: false });
+			}
+		}
+	};
+
+	let treeSearchProvider: TreeSearchWebviewProvider;
+
+	const rerunTreeSearch = async () => {
+		const term = databaseTreeProvider.getFilterText().trim();
+		if (term) {
+			await databaseTreeProvider.applySearch(term);
+			await revealSearchMatches();
+		} else {
+			databaseTreeProvider.refresh();
+		}
+		await treeSearchProvider.refreshState();
+	};
+
+	treeSearchProvider = new TreeSearchWebviewProvider(context.extensionUri, {
+		getWebviewState: async () => {
+			const conn = connectionManager.getActiveConnectionName();
+			const schemas = conn ? await loadSchemasForConnection(conn) : [];
+			return treeSearchSettings.buildWebviewState(
+				databaseTreeProvider.getFilterText(),
+				conn,
+				schemas
+			);
+		},
+		onFilterChange: async (term) => {
+			await databaseTreeProvider.applySearch(term);
+			await revealSearchMatches();
+			await treeSearchProvider.refreshState();
+		},
+		onToggleObjectType: async (kind: TreeSearchObjectKind, enabled: boolean) => {
+			await treeSearchSettings.setObjectType(kind, enabled);
+		},
+		onToggleSettings: async () => {
+			const willOpen = !treeSearchSettings.isSettingsOpen();
+			treeSearchSettings.setSettingsOpen(willOpen);
+			if (willOpen) {
+				const conn = connectionManager.getActiveConnectionName();
+				if (conn) {
+					treeSearchSettings.clearSchemaCache(conn);
+				}
+			}
+			await treeSearchProvider.refreshState();
+		},
+		onToggleSchema: async (schema, enabled) => {
+			const conn = connectionManager.getActiveConnectionName();
+			if (!conn) {
+				return;
+			}
+			await treeSearchSettings.setSchemaEnabled(conn, schema, enabled);
+		},
+		onSetAllSchemas: async (enabled) => {
+			const conn = connectionManager.getActiveConnectionName();
+			if (!conn) {
+				return;
+			}
+			const schemas = await loadSchemasForConnection(conn);
+			await treeSearchSettings.setAllSchemasEnabled(conn, enabled, schemas);
+		},
+	});
+
+	treeSearchSettings.onDidChange(() => {
+		void rerunTreeSearch();
+	});
+
+	context.subscriptions.push(
+		vscode.window.registerWebviewViewProvider(
+			TreeSearchWebviewProvider.viewType,
+			treeSearchProvider,
+			{ webviewOptions: { retainContextWhenHidden: true } }
+		)
+	);
 	registerGitDdlCommands(
 		context,
 		connectionManager,
@@ -319,8 +521,14 @@ export async function activate(context: vscode.ExtensionContext) {
 					: contextValue === 'procedure' ? 'procedure' 
 					: contextValue === 'view' ? 'view'
 					: 'table';
+				const connectionName =
+					(item as any).connectionName ?? connectionManager.getActiveConnectionName();
 				if (objectType === 'function' || objectType === 'procedure') {
-					void openRoutineDdlDocument(schema, objectName, objectType);
+					if (!connectionName) {
+						vscode.window.showWarningMessage('Нет активного подключения для DDL.');
+						return;
+					}
+					void openObjectDdlDocument(connectionName, schema, objectName, objectType);
 				} else {
 					void ObjectDetailsPanel.show(
 						context, schema, objectName, objectType,
@@ -334,40 +542,16 @@ export async function activate(context: vscode.ExtensionContext) {
 	const commands = [
 		vscode.commands.registerCommand('pgsql-tools.noop', () => undefined),
 		vscode.commands.registerCommand('pgsql-tools.searchTree', async () => {
-			const current = databaseTreeProvider.getFilterText();
-			const value = await vscode.window.showInputBox({
-				prompt: 'Поиск по дереву (только активное подключение)',
-				placeHolder: 'Введите текст…',
-				value: current,
-			});
-			if (value === undefined) return; // cancelled
-			const term = value.trim();
-			await databaseTreeProvider.applySearch(term);
-
-			// Если дерево отфильтровано — просто раскрываем ветки с совпадениями.
-			if (!term) return;
-			const activeConn = connectionManager.getActiveConnectionName();
-			if (!activeConn) return;
-
-			const root = await databaseTreeProvider.getChildren();
-			const connNode = (root as any[]).find((n) => n?.contextValue === 'connection' && n?.label === activeConn);
-			if (!connNode) return;
-
-			// Раскрываем активное подключение → схемы → группы (объекты уже будут видны).
-			await databaseTreeView.reveal(connNode as any, { expand: 1, focus: false, select: false });
-			const schemas = await databaseTreeProvider.getChildren(connNode as any);
-			for (const schemaNode of schemas as any[]) {
-				if (schemaNode?.contextValue !== 'schema') continue;
-				await databaseTreeView.reveal(schemaNode, { expand: 1, focus: false, select: false });
-				const groups = await databaseTreeProvider.getChildren(schemaNode);
-				for (const groupNode of groups as any[]) {
-					if (!String(groupNode?.contextValue ?? '').startsWith('group_')) continue;
-					await databaseTreeView.reveal(groupNode, { expand: 1, focus: false, select: false });
-				}
+			try {
+				await vscode.commands.executeCommand('pgsqlTreeSearch.focus');
+			} catch {
+				// view may not be visible yet
 			}
+			treeSearchProvider.focusInput();
 		}),
-		vscode.commands.registerCommand('pgsql-tools.clearTreeSearch', () => {
-			databaseTreeProvider.clearFilterText();
+		vscode.commands.registerCommand('pgsql-tools.clearTreeSearch', async () => {
+			await databaseTreeProvider.applySearch('');
+			await treeSearchProvider.setFilterValue('');
 		}),
 		// ── Подключение ─────────────────────────────────────────────────────
 		vscode.commands.registerCommand('pgsql-tools.addConnection', () => {
@@ -404,13 +588,17 @@ export async function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('pgsql-tools.viewTableDetails', async (node: any) => {
 			const schema = node.parentSchema || 'public';
 			const objectName = node.parentTable || node.label;
-			// Determine object type: function, procedure, view, or default to table
+			const connectionName = node.connectionName ?? connectionManager.getActiveConnectionName();
 			const objectType = node.contextValue === 'function' ? 'function' 
 				: node.contextValue === 'procedure' ? 'procedure' 
 				: node.contextValue === 'view' ? 'view'
 				: 'table';
 			if (objectType === 'function' || objectType === 'procedure') {
-				await openRoutineDdlDocument(schema, objectName, objectType);
+				if (!connectionName) {
+					vscode.window.showWarningMessage('Нет активного подключения для DDL.');
+					return;
+				}
+				await openObjectDdlDocument(connectionName, schema, objectName, objectType);
 			} else {
 				await ObjectDetailsPanel.show(
 					context, schema, objectName, objectType,
@@ -509,7 +697,14 @@ export async function activate(context: vscode.ExtensionContext) {
 		}
 	});
 	const closeDocumentListener = vscode.workspace.onDidCloseTextDocument((doc) => {
-		routineDdlOriginalText.delete(doc.uri.toString());
+		const uriKey = doc.uri.toString();
+		routineDdlOriginalText.delete(uriKey);
+		for (const [key, uri] of openDdlDocumentsByKey) {
+			if (uri === uriKey) {
+				openDdlDocumentsByKey.delete(key);
+				break;
+			}
+		}
 	});
 
 	updateConnectionStatusBar();

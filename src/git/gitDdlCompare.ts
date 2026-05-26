@@ -6,7 +6,7 @@ export function normalizeForCompare(text: string): string {
 }
 
 function normalizeDdlText(text: string, kind?: GitDdlObjectKind): string {
-	let n = normalizeForCompare(text);
+	let n = normalizeForCompare(text).replace(/^\uFEFF/, '').trimEnd();
 	if (kind === 'function' || kind === 'procedure') {
 		n = normalizeRoutineDollarQuotes(n);
 	}

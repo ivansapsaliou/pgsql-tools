@@ -45,7 +45,12 @@ export class GitDdlDocumentProvider implements vscode.TextDocumentContentProvide
 	readonly onDidChange = this.onDidChangeEmitter.event;
 
 	setContent(uri: vscode.Uri, text: string): void {
-		this.content.set(uri.toString(), text);
+		const key = uri.toString();
+		const prev = this.content.get(key);
+		if (prev === text) {
+			return;
+		}
+		this.content.set(key, text);
 		this.onDidChangeEmitter.fire(uri);
 	}
 

@@ -158,7 +158,6 @@ export function registerGitDdlCommands(
 			try {
 				const filePath = await gitStatusCache.syncToGitFile(ref);
 				vscode.window.showInformationMessage(`Сохранено: ${filePath}`);
-				gitStatusCache.scheduleRefresh(ref.connectionName);
 			} catch (err) {
 				vscode.window.showErrorMessage(
 					`Синхронизация не удалась: ${err instanceof Error ? err.message : String(err)}`
