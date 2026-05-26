@@ -167,7 +167,7 @@
 			},
 			{
 				"command": "pgsql-tools.configureGitRepository",
-				"title": "PostgreSQL: Configure Git DDL Folder…",
+				"title": "PostgreSQL: Git DDL Settings…",
 				"icon": "$(folder-opened)"
 			},
 			{
@@ -239,29 +239,14 @@
 					"group": "navigation@5"
 				},
 				{
-					"command": "pgsql-tools.schemaDiff",
+					"command": "pgsql-tools.configureGitRepository",
 					"when": "view == pgsqlDatabases",
 					"group": "navigation@6"
 				},
 				{
-					"command": "pgsql-tools.showERD",
-					"when": "view == pgsqlDatabases",
-					"group": "navigation@7"
-				},
-				{
-					"command": "pgsql-tools.showHealth",
-					"when": "view == pgsqlDatabases",
-					"group": "navigation@8"
-				},
-				{
-					"command": "pgsql-tools.configureGitRepository",
-					"when": "view == pgsqlDatabases",
-					"group": "navigation@9"
-				},
-				{
 					"command": "pgsql-tools.refreshGitStatus",
 					"when": "view == pgsqlDatabases",
-					"group": "navigation@10"
+					"group": "navigation@7"
 				}
 			],
 			"view/item/context": [

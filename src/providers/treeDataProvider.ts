@@ -152,7 +152,8 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 		// Git DDL status badges
 		const gitKind = element.contextValue;
 		if (
-			this.gitStatusCache?.isEnabled() &&
+			element.connectionName &&
+			this.gitStatusCache?.isCompareEnabled(element.connectionName) &&
 			(gitKind === 'table' || gitKind === 'function' || gitKind === 'procedure')
 		) {
 			const objectName = element.parentTable ?? String(element.label);

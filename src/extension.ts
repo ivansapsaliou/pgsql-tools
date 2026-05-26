@@ -16,7 +16,7 @@ import { ExplainQueryCommand } from './commands/explainQuery';
 import { GitDdlDocumentProvider } from './git/gitDocumentProvider';
 import { GitDdlFileDecorationProvider } from './git/gitFileDecorationProvider';
 import { GitStatusCache } from './git/gitStatusCache';
-import { getGitRepositoryPath } from './git/gitPaths';
+import { GitConnectionSettings } from './git/gitConnectionSettings';
 import { registerGitDdlCommands } from './commands/gitDdlCommands';
 
 let connectionManager: ConnectionManager;
@@ -27,7 +27,8 @@ let resultsViewProvider: ResultsViewProvider;
 let connectionStatusBar: vscode.StatusBarItem;
 let sqlCodeLensEmitter: vscode.EventEmitter<void>;
 let gitStatusCache: GitStatusCache;
-let gitFileWatcher: vscode.FileSystemWatcher | undefined;
+let gitConnectionSettings: GitConnectionSettings;
+let gitFileWatchers: vscode.FileSystemWatcher[] = [];
 const routineDdlOriginalText = new Map<string, string>();
 let routineDdlDecorationType: vscode.TextEditorDecorationType;
 
@@ -44,42 +45,52 @@ export async function activate(context: vscode.ExtensionContext) {
 	gitDocumentProvider.register(context);
 	const gitFileDecorationProvider = new GitDdlFileDecorationProvider();
 	gitFileDecorationProvider.register(context);
+	gitConnectionSettings = new GitConnectionSettings(context);
 	gitStatusCache = new GitStatusCache(
 		connectionManager,
 		queryExecutor,
 		gitDocumentProvider,
-		gitFileDecorationProvider
+		gitFileDecorationProvider,
+		gitConnectionSettings
 	);
 	databaseTreeProvider.setGitStatusCache(gitStatusCache);
 	context.subscriptions.push(gitStatusCache);
 	gitStatusCache.onDidUpdate(() => databaseTreeProvider.refresh());
 
-	const installGitFileWatcher = () => {
-		gitFileWatcher?.dispose();
-		gitFileWatcher = undefined;
-		const root = getGitRepositoryPath();
-		if (!root) {
-			return;
+	const installGitFileWatchers = () => {
+		for (const w of gitFileWatchers) {
+			w.dispose();
 		}
-		const pattern = new vscode.RelativePattern(
-			vscode.Uri.file(root),
-			'{Tables,tables,Function,function,Procedures,procedures}/**/*.sql'
+		gitFileWatchers = [];
+		const paths = gitConnectionSettings.getActiveRepositoryPaths(
+			connectionManager.getSavedConnectionNames()
 		);
-		gitFileWatcher = vscode.workspace.createFileSystemWatcher(pattern);
-		const onFsChange = () => {
-			void gitStatusCache.reloadIndexer().then(() => gitStatusCache.scheduleRefresh());
-		};
-		gitFileWatcher.onDidChange(onFsChange);
-		gitFileWatcher.onDidCreate(onFsChange);
-		gitFileWatcher.onDidDelete(onFsChange);
+		for (const root of paths) {
+			const pattern = new vscode.RelativePattern(
+				vscode.Uri.file(root),
+				'{Tables,tables,Function,function,Procedures,procedures}/**/*.sql'
+			);
+			const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+			const onFsChange = () => {
+				void gitStatusCache.reloadIndexer().then(() => gitStatusCache.scheduleRefresh());
+			};
+			watcher.onDidChange(onFsChange);
+			watcher.onDidCreate(onFsChange);
+			watcher.onDidDelete(onFsChange);
+			gitFileWatchers.push(watcher);
+		}
 	};
-	installGitFileWatcher();
-	context.subscriptions.push({ dispose: () => gitFileWatcher?.dispose() });
+	const onGitSettingsChanged = () => {
+		installGitFileWatchers();
+		gitStatusCache.scheduleRefresh();
+		databaseTreeProvider.refresh();
+	};
+	installGitFileWatchers();
+	context.subscriptions.push({ dispose: () => gitFileWatchers.forEach((w) => w.dispose()) });
 	context.subscriptions.push(
 		vscode.workspace.onDidChangeConfiguration((e) => {
 			if (e.affectsConfiguration('pgsql-tools.gitRepositoryPath')) {
-				installGitFileWatcher();
-				gitStatusCache.scheduleRefresh();
+				onGitSettingsChanged();
 			}
 		})
 	);
@@ -89,7 +100,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	// Восстанавливаем подключения из прошлой сессии
 	await connectionManager.restoreConnections();
 	databaseTreeProvider.refresh();
-	if (getGitRepositoryPath()) {
+	if (gitStatusCache.hasAnyCompareEnabled()) {
 		gitStatusCache.scheduleRefresh();
 	}
 	await vscode.workspace.getConfiguration('workbench').update(
@@ -133,7 +144,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		sqlCompletionProvider.refresh();
 		updateConnectionStatusBar();
 		refreshSqlConnectionCodeLens();
-		if (getGitRepositoryPath()) {
+		if (gitStatusCache.hasAnyCompareEnabled()) {
 			gitStatusCache.scheduleRefresh();
 		}
 	};
@@ -261,7 +272,14 @@ export async function activate(context: vscode.ExtensionContext) {
 		treeDataProvider: databaseTreeProvider,
 		showCollapseAll: true,
 	});
-	registerGitDdlCommands(context, gitStatusCache, databaseTreeView);
+	registerGitDdlCommands(
+		context,
+		connectionManager,
+		gitConnectionSettings,
+		gitStatusCache,
+		databaseTreeView,
+		onGitSettingsChanged
+	);
 
 	let lastConnectionClickName: string | null = null;
 	let lastConnectionClickAt = 0;
@@ -433,7 +451,9 @@ export async function activate(context: vscode.ExtensionContext) {
 			const ok = await connectionManager.connectSavedConnection(name);
 			if (ok) {
 				refreshConnectionUi();
-				gitStatusCache.scheduleRefresh(name);
+				if (gitConnectionSettings.isCompareEnabled(name)) {
+					gitStatusCache.scheduleRefresh(name);
+				}
 				vscode.window.showInformationMessage(`Connected: ${name}`);
 			}
 		}),

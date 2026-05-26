@@ -1,9 +1,10 @@
 import * as fs from 'fs';
 import * as vscode from 'vscode';
-import * as path from 'path';
 import { GitStatusCache, GitObjectRef } from '../git/gitStatusCache';
-import { setGitRepositoryPath, getGitRepositoryPath, resolveGitFilePath } from '../git/gitPaths';
-import { buildGitDdlUri } from '../git/gitDocumentProvider';
+import { resolveGitFilePath } from '../git/gitPaths';
+import { GitConnectionSettings } from '../git/gitConnectionSettings';
+import { ConnectionManager } from '../database/connectionManager';
+import { GitSettingsWebview } from '../views/gitSettingsWebview';
 import type { GitDdlObjectKind } from '../database/queryExecutor';
 import { stripGitStatusContextValue } from '../git/gitTreeContext';
 import type { TreeNode } from '../providers/treeDataProvider';
@@ -46,12 +47,14 @@ function resolveTreeNode(
 
 async function resolveLeftGitUri(
 	gitStatusCache: GitStatusCache,
+	gitSettings: GitConnectionSettings,
 	ref: GitObjectRef
 ): Promise<vscode.Uri> {
-	const indexed = gitStatusCache.getGitFilePath(ref.kind, ref.objectName);
+	const indexed = gitStatusCache.getGitFilePath(ref.connectionName, ref.kind, ref.objectName);
+	const root = gitSettings.getRepositoryPath(ref.connectionName);
 	const candidates = [
 		indexed,
-		getGitRepositoryPath() ? resolveGitFilePath(getGitRepositoryPath(), ref.kind, ref.objectName) : undefined,
+		root ? resolveGitFilePath(root, ref.kind, ref.objectName) : undefined,
 	].filter((p): p is string => !!p);
 
 	for (const filePath of candidates) {
@@ -59,7 +62,7 @@ async function resolveLeftGitUri(
 			await fs.promises.access(filePath);
 			return vscode.Uri.file(filePath);
 		} catch {
-			// try next path variant (Tables/tables, Function/function, …)
+			// try next path variant
 		}
 	}
 
@@ -73,6 +76,7 @@ async function resolveLeftGitUri(
 async function runGitDdlDiff(
 	node: unknown,
 	gitStatusCache: GitStatusCache,
+	gitSettings: GitConnectionSettings,
 	treeView?: vscode.TreeView<TreeNode>
 ): Promise<void> {
 	const treeNode = resolveTreeNode(node, treeView);
@@ -81,13 +85,15 @@ async function runGitDdlDiff(
 		vscode.window.showWarningMessage('Выберите таблицу, функцию или процедуру в дереве.');
 		return;
 	}
-	if (!getGitRepositoryPath()) {
-		vscode.window.showWarningMessage('Укажите каталог Git DDL.');
+	if (!gitSettings.isCompareEnabled(ref.connectionName)) {
+		vscode.window.showWarningMessage(
+			'Сравнение с Git отключено для этого подключения. Включите в настройках Git DDL.'
+		);
 		return;
 	}
 	try {
-		await gitStatusCache.reloadIndexer();
-		const leftUri = await resolveLeftGitUri(gitStatusCache, ref);
+		await gitStatusCache.reloadIndexer(ref.connectionName);
+		const leftUri = await resolveLeftGitUri(gitStatusCache, gitSettings, ref);
 		const dbDdl = await gitStatusCache.getDatabaseDdl(ref);
 		const rightUri = gitStatusCache.prepareDiffUri(ref, dbDdl);
 		const title = `${ref.objectName} (${ref.schema} @ ${ref.connectionName}) — Git ↔ DB`;
@@ -101,52 +107,24 @@ async function runGitDdlDiff(
 
 export function registerGitDdlCommands(
 	context: vscode.ExtensionContext,
+	connectionManager: ConnectionManager,
+	gitSettings: GitConnectionSettings,
 	gitStatusCache: GitStatusCache,
-	treeView: vscode.TreeView<TreeNode>
+	treeView: vscode.TreeView<TreeNode>,
+	onGitSettingsChanged: () => void
 ): void {
-	const compare = (node: unknown) => runGitDdlDiff(node, gitStatusCache, treeView);
+	const compare = (node: unknown) => runGitDdlDiff(node, gitStatusCache, gitSettings, treeView);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('pgsql-tools.configureGitRepository', async () => {
-			const current = getGitRepositoryPath();
-			const picked = await vscode.window.showOpenDialog({
-				canSelectFiles: false,
-				canSelectFolders: true,
-				canSelectMany: false,
-				openLabel: 'Select Git DDL folder',
-				defaultUri: current ? vscode.Uri.file(current) : undefined,
-			});
-			if (!picked?.[0]) {
-				return;
-			}
-			const folder = picked[0].fsPath;
-			try {
-				await fs.promises.access(folder);
-			} catch {
-				vscode.window.showErrorMessage(`Folder not accessible: ${folder}`);
-				return;
-			}
-			const gitDir = path.join(folder, '.git');
-			try {
-				await fs.promises.access(gitDir);
-			} catch {
-				const proceed = await vscode.window.showWarningMessage(
-					`В каталоге нет папки .git. Продолжить? (Git-операции выполняются отдельно.)`,
-					'Продолжить',
-					'Отмена'
-				);
-				if (proceed !== 'Продолжить') {
-					return;
-				}
-			}
-			await setGitRepositoryPath(folder);
-			vscode.window.showInformationMessage(`Git DDL folder: ${folder}`);
-			gitStatusCache.scheduleRefresh();
+		vscode.commands.registerCommand('pgsql-tools.configureGitRepository', () => {
+			GitSettingsWebview.show(context, connectionManager, gitSettings, onGitSettingsChanged);
 		}),
 
 		vscode.commands.registerCommand('pgsql-tools.refreshGitStatus', () => {
-			if (!getGitRepositoryPath()) {
-				vscode.window.showWarningMessage('Укажите каталог Git DDL: PostgreSQL: Configure Git DDL Folder…');
+			if (!gitStatusCache.hasAnyCompareEnabled()) {
+				vscode.window.showWarningMessage(
+					'Нет подключений с включённым сравнением Git. Откройте настройки Git DDL.'
+				);
 				return;
 			}
 			gitStatusCache.scheduleRefresh();
@@ -164,8 +142,9 @@ export function registerGitDdlCommands(
 				vscode.window.showWarningMessage('Выберите таблицу, функцию или процедуру в дереве.');
 				return;
 			}
-			if (!getGitRepositoryPath()) {
-				vscode.window.showWarningMessage('Укажите каталог Git DDL.');
+			const root = gitSettings.getRepositoryPath(ref.connectionName);
+			if (!root) {
+				vscode.window.showWarningMessage('Укажите каталог Git DDL для этого подключения.');
 				return;
 			}
 			const confirm = await vscode.window.showWarningMessage(

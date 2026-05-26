@@ -331,6 +331,37 @@ export class QueryExecutor {
 		return this.getProcedureDDLOnClient(client, schema, procedureName);
 	}
 
+	/**
+	 * Один запрос: DDL всех функций и процедур (для пакетного сравнения с Git).
+	 * Ключ: `${schema}:function|procedure:${name}`
+	 */
+	async fetchAllRoutineDdlMapOnClient(client: pg.Client): Promise<Map<string, string>> {
+		const res = await this.executeQueryOnClient(client, `
+			SELECT
+				n.nspname AS schema_name,
+				p.proname AS obj_name,
+				p.prokind AS kind,
+				pg_get_functiondef(p.oid) AS def
+			FROM pg_proc p
+			JOIN pg_namespace n ON n.oid = p.pronamespace
+			WHERE n.nspname NOT LIKE 'pg\\_%' ESCAPE '\\'
+			  AND n.nspname <> 'information_schema'
+			  AND p.prokind IN ('f', 'p')
+			ORDER BY n.nspname, p.proname
+		`);
+
+		const map = new Map<string, string>();
+		for (const row of res.rows) {
+			const kind: GitDdlObjectKind = row.kind === 'p' ? 'procedure' : 'function';
+			let def = normalizeRoutineDollarQuotes(String(row.def ?? ''));
+			if (kind === 'procedure') {
+				def = stripProcedureInParams(def);
+			}
+			map.set(`${row.schema_name}:${kind}:${row.obj_name}`, def);
+		}
+		return map;
+	}
+
 	async getObjectDdlOnClient(
 		client: pg.Client,
 		schema: string,
