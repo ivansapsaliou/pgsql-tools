@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ConnectionManager } from '../database/connectionManager';
 import { QueryExecutor } from '../database/queryExecutor';
 import type { GitStatusCache } from '../git/gitStatusCache';
+import { gitStatusContextSuffix, withGitStatusContextValue } from '../git/gitTreeContext';
 
 export type NodeKind =
 	| 'connection'
@@ -164,17 +165,27 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 			if (gitStatus) {
 				element.meta = { ...element.meta, gitStatus: gitStatus.status };
 				const baseIcon = iconMap[gitKind] ?? 'circle-outline';
+				const ref = {
+					connectionName: element.connectionName!,
+					schema: element.parentSchema!,
+					kind: gitKind as 'table' | 'function' | 'procedure',
+					objectName,
+				};
+				const resourceUri = this.gitStatusCache.getTreeResourceUri(ref);
+				if (resourceUri) {
+					item.resourceUri = resourceUri;
+				}
+				if (gitStatusContextSuffix(gitStatus.status)) {
+					item.contextValue = withGitStatusContextValue(gitKind, gitStatus.status) as NodeKind;
+				}
 				switch (gitStatus.status) {
 					case 'in_sync':
 						item.iconPath = new vscode.ThemeIcon(
 							baseIcon,
 							new vscode.ThemeColor('testing.iconPassed')
 						);
-						if (gitStatus.filePath) {
-							item.resourceUri = vscode.Uri.file(gitStatus.filePath);
-						}
 						item.tooltip = new vscode.MarkdownString(
-							`DDL совпадает с Git.\n\nФайл: \`${gitStatus.filePath ?? '—'}\``
+							`DDL совпадает с Git. Кнопка сравнения при наведении.\n\nФайл: \`${gitStatus.filePath ?? '—'}\``
 						);
 						break;
 					case 'diff':
@@ -182,36 +193,30 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 							baseIcon,
 							new vscode.ThemeColor('gitDecoration.modifiedResourceForeground')
 						);
-						if (gitStatus.filePath) {
-							item.resourceUri = vscode.Uri.file(gitStatus.filePath);
-						}
 						item.tooltip = new vscode.MarkdownString(
-							`DDL в Git отличается от БД.\n\nФайл: \`${gitStatus.filePath ?? '—'}\``
+							`DDL в Git отличается от БД. Кнопка сравнения при наведении.\n\nФайл: \`${gitStatus.filePath ?? '—'}\``
 						);
 						break;
 					case 'missing_in_git':
-						item.description = '$(warning)';
 						item.iconPath = new vscode.ThemeIcon(
 							baseIcon,
 							new vscode.ThemeColor('gitDecoration.deletedResourceForeground')
 						);
-						item.tooltip = 'Файл DDL отсутствует в каталоге Git (Function / Tables / Procedures).';
+						item.tooltip = 'Нет файла в Git. Кнопка сравнения при наведении.';
 						break;
 					case 'error':
-						item.description = '$(error)';
+						item.iconPath = new vscode.ThemeIcon(
+							baseIcon,
+							new vscode.ThemeColor('errorForeground')
+						);
 						item.tooltip = gitStatus.message ?? 'Ошибка сравнения с Git';
 						break;
 					case 'pending':
-						item.description = '$(sync~spin)';
+						item.iconPath = new vscode.ThemeIcon(baseIcon);
 						break;
 				}
 			}
 		}
-
-		// Double-click to open table/view/function/procedure details
-		// Команда НЕ устанавливается в item.command - она вызывается вручную в extension.ts
-		// через обработчик onDidChangeSelection при обнаружении двойного клика.
-		// Это позволяет открывать детали только по двойному клику, а не по одинарному.
 
 		return item;
 	}

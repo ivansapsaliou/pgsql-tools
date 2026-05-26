@@ -1,6 +1,6 @@
 import * as pg from 'pg';
 import { ConnectionManager } from './connectionManager';
-import { normalizeRoutineDollarQuotes } from '../git/gitRoutineDdl';
+import { normalizeRoutineDollarQuotes, stripProcedureInParams } from '../git/gitRoutineDdl';
 
 export interface QueryResult {
 	rows: any[];
@@ -320,7 +320,7 @@ export class QueryExecutor {
 		}
 
 		const raw = res.rows[0].proc_def || `-- Procedure definition not available`;
-		return normalizeRoutineDollarQuotes(raw);
+		return stripProcedureInParams(normalizeRoutineDollarQuotes(raw));
 	}
 
 	async getProcedureDDL(schema: string, procedureName: string): Promise<string> {

@@ -180,6 +180,21 @@
 				"title": "PostgreSQL: Compare with Git"
 			},
 			{
+				"command": "pgsql-tools.gitCompareInSync",
+				"title": "Сравнить с Git",
+				"icon": "$(check)"
+			},
+			{
+				"command": "pgsql-tools.gitCompareDiff",
+				"title": "Сравнить с Git",
+				"icon": "$(compare-changes)"
+			},
+			{
+				"command": "pgsql-tools.gitCompareMissing",
+				"title": "Сравнить с Git",
+				"icon": "$(warning)"
+			},
+			{
 				"command": "pgsql-tools.syncGitDdlFromDatabase",
 				"title": "PostgreSQL: Sync DDL to Git File"
 			}
@@ -292,27 +307,42 @@
 				},
 				{
 					"command": "pgsql-tools.showERDFromTable",
-					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == view)",
+					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == view || viewItem =~ /^table\\+git-/ || viewItem =~ /^view\\+git-/)",
 					"group": "context@4"
 				},
 				{
 					"command": "pgsql-tools.viewTableDetails",
-					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == view || viewItem == function || viewItem == procedure)",
+					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == view || viewItem == function || viewItem == procedure || viewItem =~ /^(table|view|function|procedure)\\+git-/)",
 					"group": "context@5"
 				},
 				{
 					"command": "pgsql-tools.editDDL",
-					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == view || viewItem == function || viewItem == procedure)",
+					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == view || viewItem == function || viewItem == procedure || viewItem =~ /^(table|view|function|procedure)\\+git-/)",
 					"group": "context@6"
 				},
 				{
+					"command": "pgsql-tools.gitCompareInSync",
+					"when": "view == pgsqlDatabases && viewItem =~ /\\+git-in_sync$/",
+					"group": "inline@90"
+				},
+				{
+					"command": "pgsql-tools.gitCompareDiff",
+					"when": "view == pgsqlDatabases && viewItem =~ /\\+git-diff$/",
+					"group": "inline@90"
+				},
+				{
+					"command": "pgsql-tools.gitCompareMissing",
+					"when": "view == pgsqlDatabases && viewItem =~ /\\+git-missing_in_git$/",
+					"group": "inline@90"
+				},
+				{
 					"command": "pgsql-tools.showGitDdlDiff",
-					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == function || viewItem == procedure)",
+					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == function || viewItem == procedure || viewItem =~ /^(table|function|procedure)\\+git-/)",
 					"group": "context@7"
 				},
 				{
 					"command": "pgsql-tools.syncGitDdlFromDatabase",
-					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == function || viewItem == procedure)",
+					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == function || viewItem == procedure || viewItem =~ /^(table|function|procedure)\\+git-/)",
 					"group": "context@8"
 				}
 			],

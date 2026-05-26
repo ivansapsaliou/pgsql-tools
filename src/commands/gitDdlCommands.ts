@@ -5,6 +5,8 @@ import { GitStatusCache, GitObjectRef } from '../git/gitStatusCache';
 import { setGitRepositoryPath, getGitRepositoryPath, resolveGitFilePath } from '../git/gitPaths';
 import { buildGitDdlUri } from '../git/gitDocumentProvider';
 import type { GitDdlObjectKind } from '../database/queryExecutor';
+import { stripGitStatusContextValue } from '../git/gitTreeContext';
+import type { TreeNode } from '../providers/treeDataProvider';
 
 function refFromTreeNode(node: {
 	parentSchema?: string;
@@ -13,7 +15,7 @@ function refFromTreeNode(node: {
 	contextValue?: string;
 	connectionName?: string;
 }): GitObjectRef | undefined {
-	const kind = node.contextValue;
+	const kind = stripGitStatusContextValue(node.contextValue);
 	if (kind !== 'table' && kind !== 'function' && kind !== 'procedure') {
 		return undefined;
 	}
@@ -31,10 +33,79 @@ function refFromTreeNode(node: {
 	};
 }
 
+function resolveTreeNode(
+	node: unknown,
+	treeView?: vscode.TreeView<TreeNode>
+): TreeNode | undefined {
+	const n = node as TreeNode | undefined;
+	if (n?.connectionName && n.parentSchema) {
+		return n;
+	}
+	return treeView?.selection?.[0];
+}
+
+async function resolveLeftGitUri(
+	gitStatusCache: GitStatusCache,
+	ref: GitObjectRef
+): Promise<vscode.Uri> {
+	const indexed = gitStatusCache.getGitFilePath(ref.kind, ref.objectName);
+	const candidates = [
+		indexed,
+		getGitRepositoryPath() ? resolveGitFilePath(getGitRepositoryPath(), ref.kind, ref.objectName) : undefined,
+	].filter((p): p is string => !!p);
+
+	for (const filePath of candidates) {
+		try {
+			await fs.promises.access(filePath);
+			return vscode.Uri.file(filePath);
+		} catch {
+			// try next path variant (Tables/tables, Function/function, …)
+		}
+	}
+
+	const emptyDoc = await vscode.workspace.openTextDocument({
+		language: 'sql',
+		content: '',
+	});
+	return emptyDoc.uri;
+}
+
+async function runGitDdlDiff(
+	node: unknown,
+	gitStatusCache: GitStatusCache,
+	treeView?: vscode.TreeView<TreeNode>
+): Promise<void> {
+	const treeNode = resolveTreeNode(node, treeView);
+	const ref = treeNode ? refFromTreeNode(treeNode) : undefined;
+	if (!ref) {
+		vscode.window.showWarningMessage('Выберите таблицу, функцию или процедуру в дереве.');
+		return;
+	}
+	if (!getGitRepositoryPath()) {
+		vscode.window.showWarningMessage('Укажите каталог Git DDL.');
+		return;
+	}
+	try {
+		await gitStatusCache.reloadIndexer();
+		const leftUri = await resolveLeftGitUri(gitStatusCache, ref);
+		const dbDdl = await gitStatusCache.getDatabaseDdl(ref);
+		const rightUri = gitStatusCache.prepareDiffUri(ref, dbDdl);
+		const title = `${ref.objectName} (${ref.schema} @ ${ref.connectionName}) — Git ↔ DB`;
+		await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, title);
+	} catch (err) {
+		vscode.window.showErrorMessage(
+			`Не удалось открыть сравнение: ${err instanceof Error ? err.message : String(err)}`
+		);
+	}
+}
+
 export function registerGitDdlCommands(
 	context: vscode.ExtensionContext,
-	gitStatusCache: GitStatusCache
+	gitStatusCache: GitStatusCache,
+	treeView: vscode.TreeView<TreeNode>
 ): void {
+	const compare = (node: unknown) => runGitDdlDiff(node, gitStatusCache, treeView);
+
 	context.subscriptions.push(
 		vscode.commands.registerCommand('pgsql-tools.configureGitRepository', async () => {
 			const current = getGitRepositoryPath();
@@ -81,43 +152,14 @@ export function registerGitDdlCommands(
 			gitStatusCache.scheduleRefresh();
 		}),
 
-		vscode.commands.registerCommand('pgsql-tools.showGitDdlDiff', async (node) => {
-			const ref = refFromTreeNode(node ?? {});
-			if (!ref) {
-				vscode.window.showWarningMessage('Выберите таблицу, функцию или процедуру в дереве.');
-				return;
-			}
-			if (!getGitRepositoryPath()) {
-				vscode.window.showWarningMessage('Укажите каталог Git DDL.');
-				return;
-			}
-			try {
-				const root = getGitRepositoryPath();
-				const filePath = resolveGitFilePath(root, ref.kind, ref.objectName);
-				let leftUri: vscode.Uri;
-				try {
-					await fs.promises.access(filePath);
-					leftUri = vscode.Uri.file(filePath);
-				} catch {
-					const emptyDoc = await vscode.workspace.openTextDocument({
-						language: 'sql',
-						content: '',
-					});
-					leftUri = emptyDoc.uri;
-				}
-				const dbDdl = await gitStatusCache.getDatabaseDdl(ref);
-				const rightUri = gitStatusCache.prepareDiffUri(ref, dbDdl);
-				const title = `${ref.objectName} (${ref.schema}) — Git ↔ DB`;
-				await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, title);
-			} catch (err) {
-				vscode.window.showErrorMessage(
-					`Не удалось открыть сравнение: ${err instanceof Error ? err.message : String(err)}`
-				);
-			}
-		}),
+		vscode.commands.registerCommand('pgsql-tools.showGitDdlDiff', compare),
+		vscode.commands.registerCommand('pgsql-tools.gitCompareInSync', compare),
+		vscode.commands.registerCommand('pgsql-tools.gitCompareDiff', compare),
+		vscode.commands.registerCommand('pgsql-tools.gitCompareMissing', compare),
 
 		vscode.commands.registerCommand('pgsql-tools.syncGitDdlFromDatabase', async (node) => {
-			const ref = refFromTreeNode(node ?? {});
+			const treeNode = resolveTreeNode(node, treeView);
+			const ref = treeNode ? refFromTreeNode(treeNode) : undefined;
 			if (!ref) {
 				vscode.window.showWarningMessage('Выберите таблицу, функцию или процедуру в дереве.');
 				return;
@@ -127,7 +169,7 @@ export function registerGitDdlCommands(
 				return;
 			}
 			const confirm = await vscode.window.showWarningMessage(
-				`Записать DDL из БД в файл Git?\n${ref.kind}: ${ref.schema}.${ref.objectName}`,
+				`Записать DDL из БД в файл Git?\n${ref.connectionName}: ${ref.schema}.${ref.objectName}`,
 				{ modal: true },
 				'Записать'
 			);

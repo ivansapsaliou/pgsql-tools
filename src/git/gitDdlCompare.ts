@@ -1,5 +1,5 @@
 import type { GitDdlObjectKind } from '../database/queryExecutor';
-import { normalizeRoutineDollarQuotes } from './gitRoutineDdl';
+import { normalizeRoutineDollarQuotes, stripProcedureInParams } from './gitRoutineDdl';
 
 export function normalizeForCompare(text: string): string {
 	return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -9,6 +9,9 @@ function normalizeDdlText(text: string, kind?: GitDdlObjectKind): string {
 	let n = normalizeForCompare(text);
 	if (kind === 'function' || kind === 'procedure') {
 		n = normalizeRoutineDollarQuotes(n);
+	}
+	if (kind === 'procedure') {
+		n = stripProcedureInParams(n);
 	}
 	return n;
 }

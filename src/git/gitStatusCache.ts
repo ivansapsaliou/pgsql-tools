@@ -9,6 +9,7 @@ import { ddlTextsEqual } from './gitDdlCompare';
 import { buildGitDdlUri } from './gitDocumentProvider';
 import { GitDdlDocumentProvider } from './gitDocumentProvider';
 import { GitDdlFileDecorationProvider } from './gitFileDecorationProvider';
+import { buildGitStatusTreeUri, parseCacheKey } from './gitStatusUri';
 
 export type GitSyncStatus = 'in_sync' | 'diff' | 'missing_in_git' | 'error' | 'pending';
 
@@ -64,6 +65,18 @@ export class GitStatusCache {
 		return this.cache.get(cacheKey(ref));
 	}
 
+	/** URI для дерева — всегда уникален по подключению (один git-файл на имя для всех БД). */
+	getTreeResourceUri(ref: GitObjectRef): vscode.Uri | undefined {
+		if (!this.getStatus(ref)) {
+			return undefined;
+		}
+		return buildGitStatusTreeUri(ref);
+	}
+
+	getGitFilePath(kind: GitDdlObjectKind, objectName: string): string | undefined {
+		return this.indexer.getFilePath(kind, objectName);
+	}
+
 	getStatusForNode(
 		connectionName: string | undefined,
 		schema: string | undefined,
@@ -105,9 +118,21 @@ export class GitStatusCache {
 	async getDatabaseDdl(ref: GitObjectRef): Promise<string> {
 		const client = this.connectionManager.getConnectionByName(ref.connectionName);
 		if (!client) {
-			throw new Error(`Not connected: ${ref.connectionName}`);
+			throw new Error(
+				`Подключение «${ref.connectionName}» не активно. Подключитесь к БД в дереве и повторите.`
+			);
 		}
-		return this.queryExecutor.getObjectDdlOnClient(client, ref.schema, ref.objectName, ref.kind);
+		try {
+			return await this.queryExecutor.getObjectDdlOnClient(
+				client,
+				ref.schema,
+				ref.objectName,
+				ref.kind
+			);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			throw new Error(`DDL из «${ref.connectionName}» (${ref.schema}.${ref.objectName}): ${msg}`);
+		}
 	}
 
 	async syncToGitFile(ref: GitObjectRef): Promise<string> {
@@ -155,9 +180,18 @@ export class GitStatusCache {
 			if (!client) {
 				continue;
 			}
-			const objects = await this.listObjects(client);
-			for (const obj of objects) {
-				jobs.push({ connectionName: connName, obj });
+			try {
+				const objects = await this.listObjects(client);
+				for (const obj of objects) {
+					jobs.push({ connectionName: connName, obj });
+				}
+			} catch (err) {
+				console.error(`Git DDL: failed to list objects for "${connName}":`, err);
+				vscode.window.showWarningMessage(
+					`Git DDL: не удалось получить список объектов для «${connName}»: ${
+						err instanceof Error ? err.message : String(err)
+					}`
+				);
 			}
 		}
 
@@ -227,21 +261,24 @@ export class GitStatusCache {
 			missing_in_git: 2,
 			in_sync: 1,
 		};
-		const byPath = new Map<string, GitObjectStatus>();
-		for (const status of this.cache.values()) {
-			if (!status.filePath) {
+		const byUri = new Map<string, { uri: vscode.Uri; status: GitObjectStatus }>();
+		for (const [key, status] of this.cache.entries()) {
+			const ref = parseCacheKey(key);
+			if (!ref) {
 				continue;
 			}
-			const prev = byPath.get(status.filePath);
-			if (!prev || statusPriority[status.status] > statusPriority[prev.status]) {
-				byPath.set(status.filePath, status);
+			const uri = buildGitStatusTreeUri(ref);
+			const uriKey = uri.toString();
+			const prev = byUri.get(uriKey);
+			if (!prev || statusPriority[status.status] > statusPriority[prev.status.status]) {
+				byUri.set(uriKey, { uri, status });
 			}
 		}
-		this.fileDecorationProvider.setPathStatuses(
-			[...byPath.entries()].map(([filePath, s]) => ({
-				filePath,
-				status: s.status,
-				tooltip: s.message,
+		this.fileDecorationProvider.setUriStatuses(
+			[...byUri.values()].map(({ uri, status }) => ({
+				uri,
+				status: status.status,
+				tooltip: status.message,
 			}))
 		);
 	}

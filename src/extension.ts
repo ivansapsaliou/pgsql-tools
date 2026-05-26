@@ -53,7 +53,6 @@ export async function activate(context: vscode.ExtensionContext) {
 	databaseTreeProvider.setGitStatusCache(gitStatusCache);
 	context.subscriptions.push(gitStatusCache);
 	gitStatusCache.onDidUpdate(() => databaseTreeProvider.refresh());
-	registerGitDdlCommands(context, gitStatusCache);
 
 	const installGitFileWatcher = () => {
 		gitFileWatcher?.dispose();
@@ -262,15 +261,16 @@ export async function activate(context: vscode.ExtensionContext) {
 		treeDataProvider: databaseTreeProvider,
 		showCollapseAll: true,
 	});
+	registerGitDdlCommands(context, gitStatusCache, databaseTreeView);
+
 	let lastConnectionClickName: string | null = null;
 	let lastConnectionClickAt = 0;
-
 	// Обработка клика - открытие деталей объекта
 	databaseTreeView.onDidChangeSelection((e) => {
 		const selection = e.selection;
 		if (selection && selection.length > 0) {
 			const item = selection[0];
-			const contextValue = (item as any).contextValue;
+			const contextValue = String((item as any).contextValue ?? '').replace(/\+git-.*$/, '');
 			if (contextValue === 'connection' || contextValue === 'connection_disconnected') {
 				const name = (item as any).connectionName ?? (item as any).label?.replace(/^● /, '');
 				if (!name) return;
@@ -294,7 +294,6 @@ export async function activate(context: vscode.ExtensionContext) {
 				}
 				return;
 			}
-			// Открываем детали только для конечных объектов
 			if (contextValue === 'table' || contextValue === 'view' || contextValue === 'function' || contextValue === 'procedure') {
 				const schema = (item as any).parentSchema || 'public';
 				const objectName = (item as any).parentTable || (item as any).label;
@@ -305,7 +304,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				if (objectType === 'function' || objectType === 'procedure') {
 					void openRoutineDdlDocument(schema, objectName, objectType);
 				} else {
-					ObjectDetailsPanel.show(
+					void ObjectDetailsPanel.show(
 						context, schema, objectName, objectType,
 						queryExecutor, connectionManager, resultsViewProvider
 					);
@@ -434,6 +433,7 @@ export async function activate(context: vscode.ExtensionContext) {
 			const ok = await connectionManager.connectSavedConnection(name);
 			if (ok) {
 				refreshConnectionUi();
+				gitStatusCache.scheduleRefresh(name);
 				vscode.window.showInformationMessage(`Connected: ${name}`);
 			}
 		}),
