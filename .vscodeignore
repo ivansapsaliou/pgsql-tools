@@ -1,0 +1,10 @@
+.vscode/**
+src/**
+**/*.ts
+!out/**
+tsconfig.json
+.gitignore
+**/*.vsix
+_vsix_check/**
+_vsix.zip
+node_modules/@vscode/codicons/**

@@ -110,10 +110,11 @@ export function registerGitDdlCommands(
 	connectionManager: ConnectionManager,
 	gitSettings: GitConnectionSettings,
 	gitStatusCache: GitStatusCache,
-	treeView: vscode.TreeView<TreeNode>,
+	getTreeView: () => vscode.TreeView<TreeNode> | undefined,
 	onGitSettingsChanged: () => void
 ): void {
-	const compare = (node: unknown) => runGitDdlDiff(node, gitStatusCache, gitSettings, treeView);
+	const compare = (node: unknown) =>
+		runGitDdlDiff(node, gitStatusCache, gitSettings, getTreeView());
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('pgsql-tools.configureGitRepository', () => {
@@ -136,7 +137,7 @@ export function registerGitDdlCommands(
 		vscode.commands.registerCommand('pgsql-tools.gitCompareMissing', compare),
 
 		vscode.commands.registerCommand('pgsql-tools.syncGitDdlFromDatabase', async (node) => {
-			const treeNode = resolveTreeNode(node, treeView);
+			const treeNode = resolveTreeNode(node, getTreeView());
 			const ref = treeNode ? refFromTreeNode(treeNode) : undefined;
 			if (!ref) {
 				vscode.window.showWarningMessage('Выберите таблицу, функцию или процедуру в дереве.');

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="UTF-8">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src __CSP_SOURCE__ data: https:; style-src __CSP_SOURCE__ 'unsafe-inline' https://cdnjs.cloudflare.com https://*.vscode-cdn.net; script-src 'nonce-__NONCE__' https://cdnjs.cloudflare.com; font-src __CSP_SOURCE__ data: https:; connect-src https:;">
+	<script nonce="__NONCE__" src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
+	<link rel="stylesheet" href="__CODE_CSS_URI__">
+</head>
+<body>
+<div class="header">
+	<span class="header-title">__NAME__</span>
+	<span class="badge">__TYPE_LABEL__</span>
+	<span class="badge">schema: __SCHEMA__</span>
+</div>
+<div class="content">
+	<div class="tabs">
+		<div class="tab active" data-tab="ddl">DDL</div>
+	</div>
+	<div class="tab-pane active" id="ddl-pane">
+		<div class="toolbar">
+			<button class="btn" id="editSaveBtn">✎ Edit</button>
+			<button class="btn" id="themeDumpBtn">🎨 Theme styles</button>
+			<span class="state" id="dirtyState">Saved</span>
+		</div>
+		<div id="ddlEditor"></div>
+	</div>
+</div>
+<div id="confirmOv" class="modal-ov" style="display:none">
+	<div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMsg">
+		<div class="modal-hd">
+			<span class="modal-title" id="confirmTitle">Confirm</span>
+			<button class="modal-x" id="confirmClose" aria-label="Close">&times;</button>
+		</div>
+		<div class="modal-bd">
+			<div id="confirmMsg" style="white-space:pre-wrap;line-height:1.35"></div>
+		</div>
+		<div class="modal-ft">
+			<button type="button" class="btn-cancel" id="confirmCancel">Cancel</button>
+			<button type="button" class="btn-ok" id="confirmOk">OK</button>
+		</div>
+	</div>
+</div>
+<div id="themeOv" class="modal-ov" style="display:none">
+	<div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="themeTitle">
+		<div class="modal-hd">
+			<span class="modal-title" id="themeTitle">Theme styles</span>
+			<button class="modal-x" id="themeClose" aria-label="Close">&times;</button>
+		</div>
+		<div class="modal-bd">
+			<div class="state" id="themeCopyState" style="margin-bottom:8px"></div>
+			<pre id="themeDumpContent" class="theme-dump-pre"></pre>
+		</div>
+		<div class="modal-ft">
+			<button type="button" class="btn-cancel" id="themeCancel">Close</button>
+			<button type="button" class="btn-ok" id="themeCopy">Copy</button>
+		</div>
+	</div>
+</div>
+<script nonce="__NONCE__">
+window.__PGTOOLS__ = {
+	ddl: __DDL_JSON__
+};
+</script>
+<script nonce="__NONCE__" src="__CODE_JS_URI__"></script>
+</body>
+</html>

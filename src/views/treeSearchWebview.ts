@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import {
 	TREE_SEARCH_KIND_ICONS,
@@ -18,6 +20,21 @@ export interface TreeSearchWebviewDeps {
 export class TreeSearchWebviewProvider implements vscode.WebviewViewProvider {
 	static readonly viewType = 'pgsqlTreeSearch';
 
+	/** Шрифт в resources/fonts (VSIX); fallback — node_modules при F5 без copy:codicons. */
+	static resolveCodiconsRoot(extensionUri: vscode.Uri): vscode.Uri {
+		const bundledDir = path.join(extensionUri.fsPath, 'resources', 'fonts');
+		if (fs.existsSync(path.join(bundledDir, 'codicon.ttf'))) {
+			return vscode.Uri.file(bundledDir);
+		}
+		return vscode.Uri.joinPath(
+			extensionUri,
+			'node_modules',
+			'@vscode',
+			'codicons',
+			'dist'
+		);
+	}
+
 	private view?: vscode.WebviewView;
 
 	constructor(
@@ -31,13 +48,7 @@ export class TreeSearchWebviewProvider implements vscode.WebviewViewProvider {
 		_token: vscode.CancellationToken
 	): void {
 		this.view = webviewView;
-		const codiconsRoot = vscode.Uri.joinPath(
-			this.extensionUri,
-			'node_modules',
-			'@vscode',
-			'codicons',
-			'dist'
-		);
+		const codiconsRoot = TreeSearchWebviewProvider.resolveCodiconsRoot(this.extensionUri);
 		const codiconFont = webviewView.webview.asWebviewUri(
 			vscode.Uri.joinPath(codiconsRoot, 'codicon.ttf')
 		);
