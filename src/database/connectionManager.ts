@@ -221,6 +221,49 @@ export class ConnectionManager {
 		this.activeConnection = null;
 	}
 
+	/**
+	 * Отдельный pg.Client для отладки (advisory unlock / cancel), не входит в пул активных подключений.
+	 */
+	async createStandaloneClient(
+		connectionName: string
+	): Promise<{ client: pg.Client; tunnel?: TunnelInfo }> {
+		const saved = this.getSavedList().find((c) => c.name === connectionName);
+		if (!saved) {
+			throw new Error(`Connection "${connectionName}" not found`);
+		}
+		const password = await this.loadPassword(connectionName);
+		if (password === undefined) {
+			throw new Error(`Password for "${connectionName}" not found`);
+		}
+		const sshPassword = saved.ssh ? await this.loadSshPassword(connectionName) : undefined;
+		const sshPassphrase = saved.ssh ? await this.loadSshPassphrase(connectionName) : undefined;
+
+		let host = saved.host;
+		let port = saved.port;
+		let tunnel: TunnelInfo | undefined;
+
+		if (saved.ssh) {
+			const sshCfg: SshConfig = {
+				...saved.ssh,
+				password: sshPassword,
+				passphrase: sshPassphrase,
+			};
+			tunnel = await openSshTunnel(sshCfg, saved.host, saved.port);
+			host = '127.0.0.1';
+			port = tunnel.localPort;
+		}
+
+		const client = new pg.Client({
+			host,
+			port,
+			database: saved.database,
+			user: saved.user,
+			password,
+		});
+		await client.connect();
+		return { client, tunnel };
+	}
+
 	// ── Helpers ───────────────────────────────────────────────────────────────
 
 	private async removeActiveEntry(name: string): Promise<void> {

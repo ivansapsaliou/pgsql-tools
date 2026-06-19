@@ -34,6 +34,25 @@ export interface ConstraintInfo {
 
 export type GitDdlObjectKind = 'table' | 'function' | 'procedure';
 
+export interface RoutineResolveInfo {
+	oid: number;
+	ddl: string;
+	language: string;
+	kind: 'function' | 'procedure';
+	specificName: string;
+}
+
+export interface RoutineParameterInfo {
+	name: string;
+	dataType: string;
+	udtName: string;
+	mode: string;
+	ordinalPosition: number;
+	characterMaximumLength?: number | null;
+	numericPrecision?: number | null;
+	numericScale?: number | null;
+}
+
 export class QueryExecutor {
 	private perClientQueue: WeakMap<pg.Client, Promise<void>> = new WeakMap();
 
@@ -360,6 +379,259 @@ export class QueryExecutor {
 			map.set(`${row.schema_name}:${kind}:${row.obj_name}`, def);
 		}
 		return map;
+	}
+
+	/**
+	 * Резолв перегрузки по specific_name (из information_schema) или единственный oid.
+	 */
+	async resolveRoutineOnClient(
+		client: pg.Client,
+		schema: string,
+		routineName: string,
+		kind: GitDdlObjectKind,
+		specificName?: string
+	): Promise<RoutineResolveInfo[]> {
+		const e = (s: string) => s.replace(/'/g, "''");
+		const prokind = kind === 'procedure' ? 'p' : 'f';
+		let specificFilter = '';
+		if (specificName) {
+			specificFilter = ` AND r.specific_name = '${e(specificName)}'`;
+		}
+		const res = await this.executeQueryOnClient(client, `
+			SELECT DISTINCT ON (p.oid)
+				p.oid,
+				pg_get_functiondef(p.oid) AS def,
+				l.lanname AS language,
+				p.prokind AS kind,
+				r.specific_name
+			FROM pg_proc p
+			JOIN pg_namespace n ON n.oid = p.pronamespace
+			JOIN pg_language l ON l.oid = p.prolang
+			LEFT JOIN information_schema.routines r
+				ON r.specific_schema = n.nspname
+				AND r.routine_name = p.proname
+				AND r.specific_name = p.proname || '_' || p.oid::text
+			WHERE n.nspname = '${e(schema)}'
+			  AND p.proname = '${e(routineName)}'
+			  AND p.prokind = '${prokind}'
+			  ${specificFilter}
+			ORDER BY p.oid
+		`);
+		return res.rows.map((row) => {
+			let def = normalizeRoutineDollarQuotes(String(row.def ?? ''));
+			if (row.kind === 'p') {
+				def = stripProcedureInParams(def);
+			}
+			return {
+				oid: Number(row.oid),
+				ddl: def,
+				language: String(row.language ?? ''),
+				kind: row.kind === 'p' ? 'procedure' : 'function',
+				specificName: String(row.specific_name ?? `${routineName}_${row.oid}`),
+			};
+		});
+	}
+
+	/**
+	 * Параметры routine: information_schema + pg_proc (имена/типы) по oid.
+	 */
+	async getRoutineParametersOnClient(
+		client: pg.Client,
+		schema: string,
+		specificName: string,
+		oid?: number
+	): Promise<RoutineParameterInfo[]> {
+		const fromCatalog = await this.getRoutineParametersFromPgProcOnClient(client, oid);
+		if (fromCatalog.length > 0) {
+			const fromIs = await this.getRoutineParametersFromInformationSchemaOnClient(
+				client,
+				schema,
+				specificName,
+				oid
+			);
+			return this.mergeParameterNamesByPosition(fromCatalog, fromIs);
+		}
+
+		return this.getRoutineParametersFromInformationSchemaOnClient(
+			client,
+			schema,
+			specificName,
+			oid
+		);
+	}
+
+	private async getRoutineParametersFromInformationSchemaOnClient(
+		client: pg.Client,
+		schema: string,
+		specificName: string,
+		oid?: number
+	): Promise<RoutineParameterInfo[]> {
+		const e = (s: string) => s.replace(/'/g, "''");
+		const namesToTry = new Set<string>([specificName]);
+		if (oid) {
+			const oidRow = await this.executeQueryOnClient(
+				client,
+				`
+				SELECT p.proname || '_' || p.oid::text AS sn
+				FROM pg_proc p
+				JOIN pg_namespace n ON n.oid = p.pronamespace
+				WHERE p.oid = ${oid}
+				  AND n.nspname = '${e(schema)}'
+				`
+			);
+			if (oidRow.rows[0]?.sn) {
+				namesToTry.add(String(oidRow.rows[0].sn));
+			}
+		}
+		for (const sn of namesToTry) {
+			const res = await this.executeQueryOnClient(client, `
+				SELECT parameter_name, data_type, udt_name, parameter_mode, ordinal_position,
+				       character_maximum_length, numeric_precision, numeric_scale
+				FROM information_schema.parameters
+				WHERE specific_schema = '${e(schema)}'
+				  AND specific_name = '${e(sn)}'
+				  AND parameter_mode IS NOT NULL
+				  AND parameter_mode NOT IN ('OUT')
+				  AND ordinal_position > 0
+				ORDER BY ordinal_position
+			`);
+			const mapped = this.mapInformationSchemaParameters(res.rows);
+			if (mapped.length > 0) {
+				return mapped;
+			}
+		}
+		return [];
+	}
+
+	private mergeParameterNamesByPosition(
+		primary: RoutineParameterInfo[],
+		nameSource: RoutineParameterInfo[]
+	): RoutineParameterInfo[] {
+		if (nameSource.length !== primary.length) {
+			return primary;
+		}
+		return primary.map((p, i) => {
+			const alt = nameSource[i];
+			if (!alt?.name) {
+				return p;
+			}
+			if (!p.name || /^arg\d+$/i.test(p.name)) {
+				return { ...p, name: alt.name };
+			}
+			return p;
+		});
+	}
+
+	/** Параметры из pg_proc — имена и точные типы через pg_type. */
+	async getRoutineParametersFromPgProcOnClient(
+		client: pg.Client,
+		oid?: number
+	): Promise<RoutineParameterInfo[]> {
+		if (!oid) {
+			return [];
+		}
+		const res = await this.executeQueryOnClient(
+			client,
+			`
+			SELECT
+				s.n AS ord,
+				COALESCE(NULLIF(btrim(p.proargnames[s.n]), ''), 'arg' || s.n::text) AS parameter_name,
+				pg_catalog.format_type(pt.oid, NULL) AS data_type,
+				pt.typname AS udt_name,
+				CASE
+					WHEN p.proargmodes IS NULL THEN 'IN'
+					WHEN p.proargmodes[s.n] = 'i' THEN 'IN'
+					WHEN p.proargmodes[s.n] = 'b' THEN 'INOUT'
+					WHEN p.proargmodes[s.n] = 'v' THEN 'VARIADIC'
+					WHEN p.proargmodes[s.n] = 'o' THEN 'OUT'
+					WHEN p.proargmodes[s.n] = 't' THEN 'TABLE'
+					ELSE 'IN'
+				END AS parameter_mode
+			FROM pg_proc p
+			CROSS JOIN LATERAL generate_subscripts(
+				COALESCE(
+					CASE WHEN p.proargmodes IS NOT NULL THEN p.proallargtypes END,
+					p.proargtypes::oid[]
+				),
+				1
+			) AS s(n)
+			JOIN pg_catalog.pg_type pt ON pt.oid = COALESCE(
+				CASE WHEN p.proargmodes IS NOT NULL THEN p.proallargtypes[s.n] END,
+				(p.proargtypes::oid[])[s.n]
+			)
+			WHERE p.oid = ${oid}
+			  AND (
+			    p.proargmodes IS NULL
+			    OR p.proargmodes[s.n] IN ('i', 'b', 'v')
+			  )
+			ORDER BY s.n
+			`
+		);
+		return res.rows.map((r) => ({
+			name: String(r.parameter_name),
+			dataType: String(r.data_type ?? 'text'),
+			udtName: String(r.udt_name ?? r.data_type ?? 'text'),
+			mode: String(r.parameter_mode ?? 'IN'),
+			ordinalPosition: Number(r.ord),
+		}));
+	}
+
+	private mapInformationSchemaParameters(rows: Record<string, unknown>[]): RoutineParameterInfo[] {
+		return rows
+			.map((r, idx) => {
+				const ord = Number(r.ordinal_position ?? idx + 1);
+				const name = r.parameter_name
+					? String(r.parameter_name)
+					: `arg${ord > 0 ? ord : idx + 1}`;
+				const dataType = String(r.data_type ?? 'text');
+				const udtName = String(r.udt_name ?? dataType);
+				const displayType =
+					dataType.toUpperCase() === 'USER-DEFINED' || dataType.toUpperCase() === 'ARRAY'
+						? udtName
+						: dataType;
+				return {
+					name,
+					dataType: displayType,
+					udtName,
+					mode: String(r.parameter_mode ?? 'IN'),
+					ordinalPosition: Number(r.ordinal_position ?? idx + 1),
+					characterMaximumLength:
+						r.character_maximum_length != null
+							? Number(r.character_maximum_length)
+							: null,
+					numericPrecision:
+						r.numeric_precision != null ? Number(r.numeric_precision) : null,
+					numericScale: r.numeric_scale != null ? Number(r.numeric_scale) : null,
+				};
+			})
+			.filter((p) => p.name.length > 0);
+	}
+
+	/**
+	 * Выполнить SQL с перехватом RAISE NOTICE (не через общую очередь — отдельный вызов).
+	 */
+	async executeWithNotices(
+		client: pg.Client,
+		query: string,
+		onNotice: (message: string) => void
+	): Promise<{ rowCount: number; error?: Error }> {
+		const handler = (msg: { message?: string }) => {
+			if (msg.message) {
+				onNotice(msg.message);
+			}
+		};
+		client.on('notice', handler);
+		try {
+			const result = await client.query(query);
+			return { rowCount: result.rowCount || 0 };
+		} catch (err) {
+			return {
+				rowCount: 0,
+				error: err instanceof Error ? err : new Error(String(err)),
+			};
+		} finally {
+			client.off('notice', handler);
+		}
 	}
 
 	async getObjectDdlOnClient(

@@ -3,7 +3,12 @@ import { ConnectionManager } from '../database/connectionManager';
 import { QueryExecutor } from '../database/queryExecutor';
 import { SqlSchemaRegistry } from './sqlSchemaRegistry';
 import { SqlObjectHoverProvider } from './sqlObjectHoverProvider';
-import { SqlObjectDefinitionProvider, type SqlObjectNavigationHandlers } from './sqlObjectDefinitionProvider';
+import { SqlObjectDocumentLinkProvider } from './sqlObjectDocumentLinkProvider';
+import {
+	navigateToSqlObject,
+	type SqlObjectLinkTarget,
+	type SqlObjectNavigationHandlers,
+} from './sqlObjectNavigation';
 import { registerSqlObjectUnderlineDecorations } from './sqlObjectUnderlineDecorations';
 
 export interface SqlObjectLanguageFeatureDeps {
@@ -20,14 +25,24 @@ export function registerSqlObjectLanguageFeatures(
 	const { schemaRegistry, queryExecutor, connectionManager, navigation } = deps;
 
 	registerSqlObjectUnderlineDecorations(context, schemaRegistry);
+
+	const documentLinkProvider = new SqlObjectDocumentLinkProvider(schemaRegistry);
 	context.subscriptions.push(
 		vscode.languages.registerHoverProvider(
 			'sql',
 			new SqlObjectHoverProvider(schemaRegistry, queryExecutor)
 		),
-		vscode.languages.registerDefinitionProvider(
-			'sql',
-			new SqlObjectDefinitionProvider(schemaRegistry, connectionManager, navigation)
+		vscode.languages.registerDocumentLinkProvider('sql', documentLinkProvider),
+		vscode.commands.registerCommand(
+			'pgsql-tools.openSqlObjectFromLink',
+			async (target: SqlObjectLinkTarget) => {
+				await navigateToSqlObject(
+					target,
+					schemaRegistry,
+					connectionManager,
+					navigation
+				);
+			}
 		)
 	);
 }

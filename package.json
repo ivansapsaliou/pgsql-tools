@@ -6,7 +6,7 @@
 	"publisher": "ivansapsaliou",
 	"icon": "resources/icon.png",
 	"engines": {
-		"vscode": "^1.75.0"
+		"vscode": "^1.83.0"
 	},
 	"categories": [
 		"Data Science"
@@ -82,6 +82,13 @@
 					"title": "PostgreSQL",
 					"icon": "resources/database-icon.svg"
 				}
+			],
+			"secondarySidebar": [
+				{
+					"id": "pgsql-tools-debug",
+					"title": "PL/pgSQL Debug",
+					"icon": "resources/database-icon.svg"
+				}
 			]
 		},
 		"views": {
@@ -104,6 +111,18 @@
 					"type": "webview",
 					"id": "pgsqlResults",
 					"name": "Query Results"
+				},
+				{
+					"type": "webview",
+					"id": "pgsqlPlpgsqlDebug",
+					"name": "PL/pgSQL Trace"
+				}
+			],
+			"pgsql-tools-debug": [
+				{
+					"type": "webview",
+					"id": "pgsqlPlpgsqlDebugSidebar",
+					"name": "Debug Session"
 				}
 			]
 		},
@@ -248,6 +267,34 @@
 			{
 				"command": "pgsql-tools.syncGitDdlFromDatabase",
 				"title": "PostgreSQL: Sync DDL to Git File"
+			},
+			{
+				"command": "pgsql-tools.debugRoutine",
+				"title": "PostgreSQL: Debug Function/Procedure…",
+				"icon": "$(debug-alt)"
+			},
+			{
+				"command": "pgsql-tools.openDebugSidebar",
+				"title": "PostgreSQL: Open PL/pgSQL Debug Panel",
+				"icon": "$(debug-alt)"
+			},
+			{
+				"command": "pgsql-tools.debugContinue",
+				"title": "PostgreSQL: Debug Continue",
+				"icon": "$(debug-continue)"
+			},
+			{
+				"command": "pgsql-tools.debugStop",
+				"title": "PostgreSQL: Debug Stop",
+				"icon": "$(debug-stop)"
+			},
+			{
+				"command": "pgsql-tools.toggleDebugBreakpoint",
+				"title": "PostgreSQL: Toggle Breakpoint"
+			},
+			{
+				"command": "pgsql-tools.debugGoToLine",
+				"title": "PostgreSQL: Debug Go To Line"
 			}
 		],
 		"menus": {
@@ -370,6 +417,11 @@
 					"command": "pgsql-tools.syncGitDdlFromDatabase",
 					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == function || viewItem == procedure || viewItem =~ /^(table|function|procedure)\\+git-/)",
 					"group": "context@8"
+				},
+				{
+					"command": "pgsql-tools.debugRoutine",
+					"when": "view == pgsqlDatabases && (viewItem == function || viewItem == procedure || viewItem =~ /^(function|procedure)\\+git-/)",
+					"group": "context@9"
 				}
 			],
 			"commandPalette": [
@@ -428,6 +480,18 @@
 				{
 					"command": "pgsql-tools.syncGitDdlFromDatabase",
 					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.debugRoutine",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.debugContinue",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.debugStop",
+					"when": "pgsqlToolsActive"
 				}
 			]
 		},
@@ -460,6 +524,11 @@
 				"key": "ctrl+shift+h",
 				"mac": "cmd+shift+h",
 				"when": "pgsqlToolsActive"
+			},
+			{
+				"command": "pgsql-tools.toggleDebugBreakpoint",
+				"key": "shift+f9",
+				"when": "editorTextFocus && editorLangId == sql && pgsqlToolsRoutineDdl"
 			}
 		]
 	},
@@ -470,6 +539,7 @@
 		"compile": "tsc -p ./ && npm run copy:codicons",
 		"watch": "tsc -watch -p ./",
 		"pretest": "npm run compile && npm run lint",
+		"test": "npm run compile && node --test out/debug/__tests__/plpgsqlParse.test.js",
 		"lint": "eslint src --ext ts"
 	},
 	"devDependencies": {

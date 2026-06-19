@@ -25,6 +25,11 @@ import { TreeSearchSettings } from './search/treeSearchSettings';
 import type { TreeSearchObjectKind } from './search/treeSearchSettings';
 import type { GitDdlObjectKind } from './database/queryExecutor';
 import type { TreeNode } from './providers/treeDataProvider';
+import { PlpgsqlDebugViewProvider } from './views/plpgsqlDebugPanel';
+import { PlpgsqlDebugSidebarProvider } from './views/plpgsqlDebugSidebar';
+import { PlpgsqlDebugCommands } from './commands/plpgsqlDebug';
+import { DebugBreakpointStore } from './debug/debugBreakpoints';
+import { ddlDocumentKey } from './services/objectDdlEditor';
 
 let connectionManager: ConnectionManager;
 let databaseTreeProvider: PostgreSQLTreeDataProvider;
@@ -50,6 +55,14 @@ let objectDdlEditorRef: ObjectDdlEditor | undefined;
 let onGitSettingsChangedRef: () => void = () => {};
 let updateConnectionStatusBarRef: () => void = () => {};
 let refreshSqlConnectionCodeLensRef: () => void = () => {};
+let plpgsqlDebugCommandsRef: PlpgsqlDebugCommands | undefined;
+let openObjectDdlDocumentRef: (
+	connectionName: string,
+	schema: string,
+	objectName: string,
+	objectType: GitDdlObjectKind,
+	specificName?: string
+) => Promise<void> = async () => {};
 
 function registerExtensionCommands(context: vscode.ExtensionContext): void {
 	const commands = [
@@ -86,9 +99,9 @@ function registerExtensionCommands(context: vscode.ExtensionContext): void {
 			});
 			await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
 		}),
-		vscode.commands.registerCommand('pgsql-tools.viewTableDetails', async (node: any) => {
+		vscode.commands.registerCommand('pgsql-tools.viewTableDetails', async (node: TreeNode) => {
 			const schema = node.parentSchema || 'public';
-			const objectName = node.parentTable || node.label;
+			const objectName = node.parentTable || String(node.label);
 			const connectionName = node.connectionName ?? connectionManager.getActiveConnectionName();
 			const objectType = node.contextValue === 'function' ? 'function'
 				: node.contextValue === 'procedure' ? 'procedure'
@@ -99,7 +112,13 @@ function registerExtensionCommands(context: vscode.ExtensionContext): void {
 					vscode.window.showWarningMessage('Нет активного подключения для DDL.');
 					return;
 				}
-				await objectDdlEditorRef?.open(connectionName, schema, objectName, objectType);
+				await openObjectDdlDocumentRef(
+					connectionName,
+					schema,
+					objectName,
+					objectType,
+					node.meta?.specificName as string | undefined
+				);
 			} else {
 				await ObjectDetailsPanel.show(
 					context, schema, objectName, objectType,
@@ -187,6 +206,23 @@ async function activateExtension(context: vscode.ExtensionContext): Promise<void
 	sqlSchemaRegistry = new SqlSchemaRegistry(queryExecutor, connectionManager);
 	sqlCompletionProvider = new SQLCompletionProvider(sqlSchemaRegistry);
 	resultsViewProvider = new ResultsViewProvider(context.extensionUri);
+	const plpgsqlDebugPanel = new PlpgsqlDebugViewProvider(context.extensionUri);
+	const debugBreakpointStore = new DebugBreakpointStore(context);
+	const plpgsqlDebugSidebar = new PlpgsqlDebugSidebarProvider(
+		context.extensionUri,
+		connectionManager,
+		queryExecutor,
+		debugBreakpointStore
+	);
+	plpgsqlDebugCommandsRef = new PlpgsqlDebugCommands(
+		context,
+		connectionManager,
+		queryExecutor,
+		plpgsqlDebugPanel,
+		plpgsqlDebugSidebar,
+		debugBreakpointStore
+	);
+	context.subscriptions.push(...plpgsqlDebugCommandsRef.register());
 
 	const gitDocumentProvider = new GitDdlDocumentProvider();
 	gitDocumentProvider.register(context);
@@ -360,19 +396,72 @@ async function activateExtension(context: vscode.ExtensionContext): Promise<void
 			refreshSqlConnectionCodeLens();
 		}
 	);
-	const openObjectDdlDocument = (
+	const openObjectDdlDocument = async (
 		connectionName: string,
 		schema: string,
 		objectName: string,
-		objectType: GitDdlObjectKind
-	) => objectDdlEditor.open(connectionName, schema, objectName, objectType);
+		objectType: GitDdlObjectKind,
+		specificName?: string
+	) => {
+		await objectDdlEditor.open(connectionName, schema, objectName, objectType);
+		const docKey = ddlDocumentKey(connectionName, schema, objectType, objectName);
+		const uriStr = openDdlDocumentsByKey.get(docKey);
+		if (!uriStr || !plpgsqlDebugCommandsRef) {
+			return;
+		}
+		const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uriStr);
+		if (!doc) {
+			return;
+		}
+		let spec = specificName;
+		const client = connectionManager.getConnectionByName(connectionName);
+		if (client && (objectType === 'function' || objectType === 'procedure')) {
+			if (!spec) {
+				try {
+					const resolved = await queryExecutor.resolveRoutineOnClient(
+						client,
+						schema,
+						objectName,
+						objectType
+					);
+					if (resolved.length === 1) {
+						spec = resolved[0].specificName;
+					}
+				} catch {
+					/* ignore */
+				}
+			}
+			if (spec) {
+				plpgsqlDebugCommandsRef.attachRoutineMetadata(doc.uri, {
+					connectionName,
+					schema,
+					objectName,
+					objectType,
+					specificName: spec,
+				});
+				plpgsqlDebugCommandsRef.updateBreakpointDecorations();
+			}
+		}
+	};
 	objectDdlEditorRef = objectDdlEditor;
+	openObjectDdlDocumentRef = openObjectDdlDocument;
+	plpgsqlDebugCommandsRef.setOpenRoutineDdl(openObjectDdlDocument);
 
 	// Results Panel (нижняя панель)
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider(
 			ResultsViewProvider.viewType,
 			resultsViewProvider,
+			{ webviewOptions: { retainContextWhenHidden: true } }
+		),
+		vscode.window.registerWebviewViewProvider(
+			PlpgsqlDebugViewProvider.viewType,
+			plpgsqlDebugPanel,
+			{ webviewOptions: { retainContextWhenHidden: true } }
+		),
+		vscode.window.registerWebviewViewProvider(
+			PlpgsqlDebugSidebarProvider.viewType,
+			plpgsqlDebugSidebar,
 			{ webviewOptions: { retainContextWhenHidden: true } }
 		)
 	);
@@ -397,7 +486,7 @@ async function activateExtension(context: vscode.ExtensionContext): Promise<void
 					resultsViewProvider
 				),
 			openRoutineDdl: (connectionName, schema, objectName, objectType) =>
-				objectDdlEditor.open(connectionName, schema, objectName, objectType),
+				openObjectDdlDocumentRef(connectionName, schema, objectName, objectType),
 		},
 	});
 	context.subscriptions.push(
@@ -576,7 +665,8 @@ async function activateExtension(context: vscode.ExtensionContext): Promise<void
 						vscode.window.showWarningMessage('Нет активного подключения для DDL.');
 						return;
 					}
-					void openObjectDdlDocument(connectionName, schema, objectName, objectType);
+					const specificName = (item as TreeNode).meta?.specificName as string | undefined;
+					void openObjectDdlDocument(connectionName, schema, objectName, objectType, specificName);
 				} else {
 					void ObjectDetailsPanel.show(
 						context, schema, objectName, objectType,

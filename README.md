@@ -13,6 +13,32 @@
 - **Schema Diff**: сравнение схем (БД vs БД или схема vs схема)
 - **Health (диагностика)**: медленные запросы, блокировки, размеры таблиц/индексов, рекомендации VACUUM/ANALYZE
 - **Explain Query**: `EXPLAIN`/`EXPLAIN ANALYZE` (опционально `BUFFERS`) с визуализацией плана
+- **PL/pgSQL Debug**: трассировка и breakpoints для функций/процедур `LANGUAGE plpgsql` без установки `pldebugger` на сервере
+
+### PL/pgSQL Debug (отладка без расширений на сервере)
+
+Отладчик **не изменяет** объекты в каталоге PostgreSQL: исходник читается через `pg_get_functiondef`, инструментированный код выполняется одним запросом `DO $pgsql_tools$ … $pgsql_tools$` из VS Code.
+
+| Режим | Описание |
+|--------|----------|
+| **Trace** | `RAISE NOTICE` с префиксом `[PGSQL_TOOLS]` на каждом операторе + значения переменных |
+| **Breakpoints only** | Пауза только на точках останова (`Shift+F9` в редакторе DDL) через `pg_advisory_lock` |
+
+**Как запустить**
+
+1. Подключитесь к dev-БД (не рекомендуется для продакшена — выполняется реальная логика функции).
+2. В дереве: правый клик по функции/процедуре → **PostgreSQL: Debug Function/Procedure…** — откроются DDL и **правая панель PL/pgSQL Debug**.
+3. В правой панели: заполните параметры (с валидацией по типам: дата, число, UUID, JSON и т.д.), выберите режим Trace или Breakpoints only.
+4. Точки останова: в DDL **Shift+F9** или кнопка «Breakpoint на текущей строке» в панели; список breakpoints отображается в панели.
+5. **Запустить** — трассировка в нижней панели **PL/pgSQL Trace**; номера в колонке «Строка DDL» совпадают с редактором (клик = переход к строке).
+6. При паузе — **Continue** / **Stop** (в правой панели или в trace).
+
+**Ограничения**
+
+- Только `LANGUAGE plpgsql`.
+- Нет полноценного Step Into в другие функции.
+- Динамический SQL (`EXECUTE`) не инструментируется.
+- Нужны права на `DO` и `EXECUTE` на объект.
 
 ### Быстрый старт (разработка)
 
@@ -70,6 +96,9 @@ vsce package
 - `PostgreSQL: Schema Diff…`
 - `PostgreSQL: Show ER Diagram`
 - `PostgreSQL: Database Health` (+ отдельные команды Health)
+- `PostgreSQL: Debug Function/Procedure…` / **Debug Continue** / **Debug Stop**
+
+Запуск unit-тестов парсера: `npm test`
 
 ### Примечания
 

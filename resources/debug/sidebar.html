@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+	<meta charset="UTF-8">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}}; script-src {{cspSource}};">
+	<link rel="stylesheet" href="{{styleUri}}">
+</head>
+<body>
+<div id="app">
+	<div class="session-header">
+		<div class="session-header-row">
+			<div id="sessionTitle" class="session-title">PL/pgSQL Debug</div>
+			<button type="button" id="btnInfo" class="icon-btn" title="Справка" aria-label="Справка">ℹ</button>
+		</div>
+		<div id="sessionMeta" class="session-meta"></div>
+		<span id="statusBadge" class="status-badge ready">Готово</span>
+	</div>
+
+	<details class="section" open>
+		<summary>Параметры</summary>
+		<div class="section-body" id="paramsContainer"></div>
+	</details>
+
+	<details class="section" open>
+		<summary>Настройки</summary>
+		<div class="section-body mode-options">
+			<label class="mode-option">
+				<input type="radio" name="debugMode" value="trace" checked>
+				<span><strong>Trace</strong> — лог на каждом операторе (подробно)</span>
+			</label>
+			<label class="mode-option">
+				<input type="radio" name="debugMode" value="breakpoints_only">
+				<span><strong>Breakpoints only</strong> — только точки останова (быстрее)</span>
+			</label>
+		</div>
+	</details>
+
+	<details class="section" open>
+		<summary>Точки останова</summary>
+		<div class="section-body">
+			<p class="help-text">В редакторе DDL: <kbd>Shift+F9</kbd> на нужной строке. В режиме breakpoints сначала добавьте точки, затем Запустить.</p>
+			<ul id="bpList" class="bp-list"></ul>
+			<div class="btn-row">
+				<button type="button" class="secondary" id="btnBpCurrent">Breakpoint на текущей строке</button>
+			</div>
+		</div>
+	</details>
+
+	<div class="actions-sticky btn-row">
+		<button type="button" class="primary" id="btnRun">Запустить</button>
+		<button type="button" class="secondary" id="btnContinue" disabled>Continue</button>
+		<button type="button" class="secondary" id="btnStop" disabled>Stop</button>
+	</div>
+</div>
+<script src="{{scriptUri}}"></script>
+</body>
+</html>
