@@ -27,6 +27,66 @@ function applyTheme(){
 }
 
 let ddlEditor;
+let sqlCompletionRequestId = 0;
+const sqlCompletionPending = new Map();
+
+function offsetFromPosition(model, position){
+	return model.getOffsetAt(position);
+}
+
+function setupSqlCompletionBridge(){
+	if(typeof monaco === 'undefined'){ return; }
+	monaco.languages.registerCompletionItemProvider('sql', {
+		triggerCharacters: ['.', ' ', '(', '"'],
+		provideCompletionItems: (model, position) => {
+			return new Promise((resolve) => {
+				const requestId = ++sqlCompletionRequestId;
+				sqlCompletionPending.set(requestId, { resolve, model, position });
+				vscode.postMessage({
+					command: 'requestSqlCompletion',
+					requestId,
+					text: model.getValue(),
+					offset: offsetFromPosition(model, position),
+				});
+				setTimeout(() => {
+					if(!sqlCompletionPending.has(requestId)){ return; }
+					sqlCompletionPending.delete(requestId);
+					resolve({ suggestions: [] });
+				}, 8000);
+			});
+		},
+	});
+}
+
+window.addEventListener('message', (event) => {
+	const msg = event.data;
+	if(!msg || msg.command !== 'sqlCompletionResult'){ return; }
+	const pending = sqlCompletionPending.get(msg.requestId);
+	if(!pending){ return; }
+	sqlCompletionPending.delete(msg.requestId);
+	const { resolve, model, position } = pending;
+	const suggestions = (msg.items || []).map((item) => {
+		const start = model.getPositionAt(item.rangeOffset);
+		const end = model.getPositionAt(item.rangeOffset + (item.rangeLength || 0));
+		return {
+			label: item.label,
+			kind: item.kind,
+			detail: item.detail,
+			documentation: item.documentation ? { value: item.documentation } : undefined,
+			insertText: item.insertText || item.label,
+			sortText: item.sortText,
+			filterText: item.filterText,
+			range: {
+				startLineNumber: start.lineNumber,
+				startColumn: start.column,
+				endLineNumber: end.lineNumber,
+				endColumn: end.column,
+			},
+		};
+	});
+	resolve({ incomplete: !!msg.isIncomplete, suggestions });
+});
+
 const config = window.__PGTOOLS__ || {};
 const columnSizingState = (vscode.getState() && vscode.getState().columnSizing) || {};
 const measureCanvas = document.createElement('canvas');
@@ -215,13 +275,18 @@ function setupAllTables(){
 
 require(['vs/editor/editor.main'],()=>{
 	applyTheme();
+	setupSqlCompletionBridge();
 	ddlEditor = monaco.editor.create(document.getElementById('ddlEditor'),{
 		value: config.ddl || '',
-		language:'sql',theme:'vsc',readOnly:true,
+		language:'sql',theme:'vsc',readOnly:false,
 		minimap:{enabled:false},fontSize:13,
 		fontFamily: getVar('--vscode-editor-font-family') || 'Consolas, monospace',
 		automaticLayout:true,scrollBeyondLastLine:false,wordWrap:'on',
 		tabSize:2,lineNumbers:'on',
+		quickSuggestions: { other: true, comments: false, strings: false },
+		suggestOnTriggerCharacters: true,
+		wordBasedSuggestions: 'off',
+		suggest: { showKeywords: true, showSnippets: false, localityBonus: true },
 	});
 	new MutationObserver(applyTheme).observe(document.body,{attributes:true,attributeFilter:['class']});
 });

@@ -41,6 +41,8 @@ export class ConnectionManager {
 	private connections: Map<string, ActiveConnection> = new Map();
 	private activeConnection: string | null = null;
 	private context: vscode.ExtensionContext;
+	private onConnectionLostEmitter = new vscode.EventEmitter<string>();
+	readonly onConnectionLost = this.onConnectionLostEmitter.event;
 
 	constructor(context: vscode.ExtensionContext) {
 		this.context = context;
@@ -111,6 +113,15 @@ export class ConnectionManager {
 
 	getConnectionByName(name: string): pg.Client | null {
 		return this.connections.get(name)?.client ?? null;
+	}
+
+	getConnectionNameByClient(client: pg.Client): string | undefined {
+		for (const [name, entry] of this.connections) {
+			if (entry.client === client) {
+				return name;
+			}
+		}
+		return undefined;
 	}
 
 	isConnected(name: string): boolean {
@@ -272,6 +283,7 @@ export class ConnectionManager {
 			try { await entry.client.end(); } catch { /* ignore */ }
 			try { entry.tunnel?.close(); } catch { /* ignore */ }
 			this.connections.delete(name);
+			this.onConnectionLostEmitter.fire(name);
 		}
 		if (this.activeConnection === name) {
 			// Не переключаемся автоматически на “следующее” подключение.
@@ -335,5 +347,9 @@ export class ConnectionManager {
 
 	private async loadSshPassphrase(name: string): Promise<string | undefined> {
 		return this.context.secrets.get(`pgsql.ssh.passphrase.${name}`);
+	}
+
+	dispose(): void {
+		this.onConnectionLostEmitter.dispose();
 	}
 }

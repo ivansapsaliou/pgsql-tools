@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from '../database/connectionManager';
 import { GitConnectionConfig, GitConnectionSettings } from '../git/gitConnectionSettings';
+import { normalizeCompareKinds } from '../git/gitCompareKinds';
+
+type SettingsRow = GitConnectionConfig & { name: string };
 
 export class GitSettingsWebview {
 	private static panel: vscode.WebviewPanel | undefined;
@@ -23,7 +26,7 @@ export class GitSettingsWebview {
 		}
 
 		const names = connectionManager.getSavedConnectionNames();
-		const rows = names.map((name) => {
+		const rows: SettingsRow[] = names.map((name) => {
 			const cfg = gitSettings.get(name);
 			return { name, ...cfg };
 		});
@@ -37,10 +40,11 @@ export class GitSettingsWebview {
 			}
 			if (message.command === 'save') {
 				const configs: Record<string, GitConnectionConfig> = {};
-				for (const row of message.rows as Array<GitConnectionConfig & { name: string }>) {
+				for (const row of message.rows as SettingsRow[]) {
 					configs[row.name] = {
 						repositoryPath: String(row.repositoryPath ?? '').trim(),
 						compareEnabled: !!row.compareEnabled,
+						compareKinds: normalizeCompareKinds(row.compareKinds),
 					};
 				}
 				await gitSettings.setAll(configs);
@@ -73,9 +77,7 @@ export class GitSettingsWebview {
 		});
 	}
 
-	private static getHtml(
-		rows: Array<{ name: string; repositoryPath: string; compareEnabled: boolean }>
-	): string {
+	private static getHtml(rows: SettingsRow[]): string {
 		const esc = (s: string) =>
 			String(s ?? '')
 				.replace(/&/g, '&amp;')
@@ -92,11 +94,20 @@ export class GitSettingsWebview {
 		<tr data-name="${esc(r.name)}">
 			<td class="conn">${esc(r.name)}</td>
 			<td>
-				<label class="chk"><input type="checkbox" class="compare" ${r.compareEnabled ? 'checked' : ''} /> Сравнивать с Git</label>
+				<label class="chk"><input type="checkbox" class="compare" ${r.compareEnabled ? 'checked' : ''} /> Сравнивать</label>
+			</td>
+			<td class="kinds">
+				<div class="kinds-inner">
+					<label class="chk"><input type="checkbox" class="kind-table" ${r.compareKinds.table ? 'checked' : ''} /> Таблицы</label>
+					<label class="chk"><input type="checkbox" class="kind-function" ${r.compareKinds.function ? 'checked' : ''} /> Функции</label>
+					<label class="chk"><input type="checkbox" class="kind-procedure" ${r.compareKinds.procedure ? 'checked' : ''} /> Процедуры</label>
+				</div>
 			</td>
 			<td class="path-cell">
-				<input type="text" class="path" value="${esc(r.repositoryPath)}" placeholder="Путь к каталогу tables/Function/Procedures" />
-				<button type="button" class="pick" title="Выбрать папку">…</button>
+				<div class="path-wrap">
+					<input type="text" class="path" value="${esc(r.repositoryPath)}" placeholder="Путь к каталогу Tables/Function/Procedures" />
+					<button type="button" class="pick" title="Выбрать папку">…</button>
+				</div>
 			</td>
 		</tr>`
 						)
@@ -109,24 +120,29 @@ export class GitSettingsWebview {
 body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);color:var(--vscode-foreground);padding:16px 20px}
 h2{font-size:15px;font-weight:600;margin-bottom:8px}
 .hint{color:var(--vscode-descriptionForeground);font-size:12px;margin-bottom:16px;line-height:1.45}
-table{width:100%;border-collapse:collapse}
-th,td{border:1px solid var(--vscode-panel-border);padding:8px 10px;vertical-align:middle}
+table{width:100%;border-collapse:collapse;table-layout:fixed}
+th,td{border:1px solid var(--vscode-panel-border);padding:8px 10px;vertical-align:top}
 th{background:var(--vscode-editor-inactiveSelectionBackground);text-align:left;font-size:11px;text-transform:uppercase}
+th:nth-child(1),td.conn{width:14%}
+th:nth-child(2){width:12%}
+th:nth-child(3){width:18%}
+th:nth-child(4){width:56%}
 .conn{font-weight:600;white-space:nowrap}
-.path-cell{display:flex;gap:6px}
-.path{flex:1;min-width:0;padding:4px 8px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:2px}
+.kinds-inner{display:flex;flex-direction:column;gap:4px}
+.path-wrap{display:flex;gap:6px;align-items:center;width:100%}
+.path{flex:1;min-width:0;width:100%;padding:4px 8px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:2px}
 .chk{display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:12px}
 button{padding:4px 12px;border:1px solid var(--vscode-button-border);background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-radius:2px;cursor:pointer}
 button.secondary{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground)}
-button.pick{padding:4px 8px}
+button.pick{padding:4px 8px;flex-shrink:0}
 .actions{margin-top:16px;display:flex;gap:8px}
 .empty{color:var(--vscode-descriptionForeground)}
 </style></head>
 <body>
 <h2>Git DDL по подключениям</h2>
-<p class="hint">Для каждого подключения укажите каталог с папками Tables, Function, Procedures. Если сравнение выключено, лишние запросы к БД для Git не выполняются.</p>
+<p class="hint">Для каждого подключения укажите каталог с папками Tables, Function, Procedures. Выберите типы объектов для сравнения. Если сравнение выключено, лишние запросы к БД не выполняются.</p>
 <table>
-<thead><tr><th>Подключение</th><th>Сравнение</th><th>Каталог Git DDL</th></tr></thead>
+<thead><tr><th>Подключение</th><th>Сравнение</th><th>Типы объектов</th><th>Каталог Git DDL</th></tr></thead>
 <tbody>${body}</tbody>
 </table>
 <div class="actions">
@@ -139,6 +155,11 @@ function collectRows(){
 	return [...document.querySelectorAll('tbody tr')].map(tr=>({
 		name: tr.dataset.name,
 		compareEnabled: tr.querySelector('.compare').checked,
+		compareKinds: {
+			table: tr.querySelector('.kind-table').checked,
+			function: tr.querySelector('.kind-function').checked,
+			procedure: tr.querySelector('.kind-procedure').checked
+		},
 		repositoryPath: tr.querySelector('.path').value.trim()
 	}));
 }

@@ -160,7 +160,8 @@ export class PostgreSQLTreeDataProvider implements vscode.TreeDataProvider<TreeN
 		if (
 			element.connectionName &&
 			this.gitStatusCache?.isCompareEnabled(element.connectionName) &&
-			(gitKind === 'table' || gitKind === 'function' || gitKind === 'procedure')
+			(gitKind === 'table' || gitKind === 'function' || gitKind === 'procedure') &&
+			this.gitStatusCache.isKindCompareEnabled(element.connectionName, gitKind)
 		) {
 			const objectName = element.parentTable ?? String(element.label);
 			const gitStatus = this.gitStatusCache.getStatusForNode(

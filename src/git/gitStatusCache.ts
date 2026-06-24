@@ -6,6 +6,7 @@ import { QueryExecutor, GitDdlObjectKind } from '../database/queryExecutor';
 import { GitFileIndexer } from './gitFileIndexer';
 import { GitConnectionSettings } from './gitConnectionSettings';
 import { ddlTextsEqual } from './gitDdlCompare';
+import { applyGitDdlOnClient } from './gitDdlApply';
 import { buildGitDdlUri } from './gitDocumentProvider';
 import { GitDdlDocumentProvider } from './gitDocumentProvider';
 import { GitDdlFileDecorationProvider } from './gitFileDecorationProvider';
@@ -26,11 +27,28 @@ export interface GitObjectRef {
 	objectName: string;
 }
 
+export interface SchemaSyncResult {
+	succeeded: number;
+	failed: number;
+	skipped: number;
+	errors: Array<{ ref: GitObjectRef; message: string }>;
+}
+
+interface SyncUiOptions {
+	deferUi?: boolean;
+}
+
 function cacheKey(ref: GitObjectRef): string {
 	return `${ref.connectionName}:${ref.schema}:${ref.kind}:${ref.objectName}`;
 }
 
-const CONCURRENCY = 6;
+function objectJobKey(obj: ListedObject): string {
+	return `${obj.schema}:${obj.kind}:${obj.objectName}`;
+}
+
+const CONCURRENCY = 3;
+const REFRESH_DEBOUNCE_MS = 2500;
+const DECORATION_DEBOUNCE_MS = 1000;
 
 interface ListedObject {
 	schema: string;
@@ -43,15 +61,27 @@ interface CompareJob {
 	obj: ListedObject;
 	indexer: GitFileIndexer;
 	routineDdlMap: Map<string, string>;
+	client: pg.Client;
+}
+
+export interface GitRefreshOptions {
+	/** Без debounce — для ручного обновления и подключения к БД. */
+	immediate?: boolean;
 }
 
 export class GitStatusCache {
 	private cache = new Map<string, GitObjectStatus>();
 	private indexersByPath = new Map<string, GitFileIndexer>();
 	private refreshGeneration = 0;
+	private refreshRunning = false;
+	private refreshAgain = false;
+	private scheduledConnection?: string;
+	private refreshDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+	private decorationTimer: ReturnType<typeof setTimeout> | undefined;
 	private progressBar: vscode.StatusBarItem | undefined;
-	private onUpdateEmitter = new vscode.EventEmitter<void>();
-	readonly onDidUpdate = this.onUpdateEmitter.event;
+	private onTreeRefreshEmitter = new vscode.EventEmitter<void>();
+	/** Полное обновление дерева — только в начале/конце сверки. */
+	readonly onDidRequestTreeRefresh = this.onTreeRefreshEmitter.event;
 
 	constructor(
 		private connectionManager: ConnectionManager,
@@ -65,10 +95,24 @@ export class GitStatusCache {
 		return this.gitSettings.isCompareEnabled(connectionName);
 	}
 
+	isKindCompareEnabled(connectionName: string, kind: GitDdlObjectKind): boolean {
+		return this.gitSettings.isKindCompareEnabled(connectionName, kind);
+	}
+
 	hasAnyCompareEnabled(): boolean {
 		return this.gitSettings
 			.getConnectionsWithCompareEnabled(this.connectionManager.getSavedConnectionNames())
 			.length > 0;
+	}
+
+	hasConnectedCompareEnabled(): boolean {
+		return this.gitSettings
+			.getConnectionsWithCompareEnabled(this.connectionManager.getSavedConnectionNames())
+			.some((name) => this.connectionManager.isConnected(name));
+	}
+
+	isRefreshInProgress(): boolean {
+		return this.refreshRunning;
 	}
 
 	getStatus(ref: GitObjectRef): GitObjectStatus | undefined {
@@ -105,6 +149,9 @@ export class GitStatusCache {
 		if (kind !== 'table' && kind !== 'function' && kind !== 'procedure') {
 			return undefined;
 		}
+		if (!this.isKindCompareEnabled(connectionName, kind)) {
+			return undefined;
+		}
 		return this.getStatus({
 			connectionName,
 			schema,
@@ -131,14 +178,37 @@ export class GitStatusCache {
 		}
 	}
 
-	scheduleRefresh(connectionName?: string): void {
+	scheduleRefresh(connectionName?: string, options?: GitRefreshOptions): void {
 		if (!this.hasAnyCompareEnabled()) {
 			this.cache.clear();
 			this.fileDecorationProvider.clear();
-			this.onUpdateEmitter.fire();
+			this.requestTreeRefresh();
 			return;
 		}
-		void this.runRefresh(connectionName);
+		if (!this.hasConnectedCompareEnabled()) {
+			return;
+		}
+		if (connectionName !== undefined) {
+			if (!this.connectionManager.isConnected(connectionName)) {
+				return;
+			}
+			this.scheduledConnection = connectionName;
+		}
+		if (options?.immediate) {
+			if (this.refreshDebounceTimer) {
+				clearTimeout(this.refreshDebounceTimer);
+				this.refreshDebounceTimer = undefined;
+			}
+			void this.beginRefresh();
+			return;
+		}
+		if (this.refreshDebounceTimer) {
+			clearTimeout(this.refreshDebounceTimer);
+		}
+		this.refreshDebounceTimer = setTimeout(() => {
+			this.refreshDebounceTimer = undefined;
+			void this.beginRefresh();
+		}, REFRESH_DEBOUNCE_MS);
 	}
 
 	async getDatabaseDdl(ref: GitObjectRef): Promise<string> {
@@ -161,7 +231,12 @@ export class GitStatusCache {
 		}
 	}
 
-	async syncToGitFile(ref: GitObjectRef): Promise<string> {
+	async syncToGitFile(ref: GitObjectRef, options?: SyncUiOptions): Promise<string> {
+		if (!this.isKindCompareEnabled(ref.connectionName, ref.kind)) {
+			throw new Error(
+				`Синхронизация для типа «${ref.kind}» отключена в настройках Git DDL для «${ref.connectionName}».`
+			);
+		}
 		const root = this.gitSettings.getRepositoryPath(ref.connectionName);
 		if (!root) {
 			throw new Error('Каталог Git DDL для подключения не настроен');
@@ -181,9 +256,152 @@ export class GitStatusCache {
 		}
 		const status = ddlTextsEqual(onDisk, ddl, ref.kind) ? 'in_sync' : 'diff';
 		this.cache.set(cacheKey(ref), { status, filePath });
-		this.publishFileDecorations();
-		this.onUpdateEmitter.fire();
+		if (!options?.deferUi) {
+			this.publishFileDecorations();
+			this.requestTreeRefresh();
+		}
 		return filePath;
+	}
+
+	async syncFromGitToDatabase(ref: GitObjectRef, options?: SyncUiOptions): Promise<void> {
+		if (!this.isKindCompareEnabled(ref.connectionName, ref.kind)) {
+			throw new Error(
+				`Сравнение для типа «${ref.kind}» отключено в настройках Git DDL для «${ref.connectionName}».`
+			);
+		}
+		const root = this.gitSettings.getRepositoryPath(ref.connectionName);
+		if (!root) {
+			throw new Error('Каталог Git DDL для подключения не настроен');
+		}
+		await this.reloadIndexer(ref.connectionName);
+		const indexer = this.indexersByPath.get(root);
+		if (!indexer) {
+			throw new Error('Индексатор Git DDL не инициализирован');
+		}
+		const filePath = indexer.getFilePath(ref.kind, ref.objectName);
+		if (!filePath) {
+			throw new Error('Нет файла в Git для этого объекта');
+		}
+
+		const client = this.connectionManager.getConnectionByName(ref.connectionName);
+		if (!client) {
+			throw new Error(
+				`Подключение «${ref.connectionName}» не активно. Подключитесь к БД в дереве и повторите.`
+			);
+		}
+
+		const gitDdl = await fs.promises.readFile(filePath, 'utf8');
+		await applyGitDdlOnClient(
+			this.queryExecutor,
+			client,
+			ref.schema,
+			ref.objectName,
+			ref.kind,
+			gitDdl
+		);
+
+		const dbDdl = await this.queryExecutor.getObjectDdlOnClient(
+			client,
+			ref.schema,
+			ref.objectName,
+			ref.kind
+		);
+		const status = ddlTextsEqual(gitDdl, dbDdl, ref.kind) ? 'in_sync' : 'diff';
+		this.cache.set(cacheKey(ref), { status, filePath });
+		if (!options?.deferUi) {
+			this.publishFileDecorations();
+			this.requestTreeRefresh();
+		}
+	}
+
+	async listSchemaRefs(connectionName: string, schema: string): Promise<GitObjectRef[]> {
+		const client = this.connectionManager.getConnectionByName(connectionName);
+		if (!client) {
+			throw new Error(
+				`Connection «${connectionName}» is not active. Connect to the database and try again.`
+			);
+		}
+		const compareKinds = this.gitSettings.getCompareKinds(connectionName);
+		const objects = await this.listObjects(client, connectionName);
+		const seen = new Set<string>();
+		const refs: GitObjectRef[] = [];
+		for (const obj of objects) {
+			if (obj.schema !== schema || !compareKinds[obj.kind]) {
+				continue;
+			}
+			const dedupeKey = objectJobKey(obj);
+			if (seen.has(dedupeKey)) {
+				continue;
+			}
+			seen.add(dedupeKey);
+			refs.push({
+				connectionName,
+				schema: obj.schema,
+				kind: obj.kind,
+				objectName: obj.objectName,
+			});
+		}
+		return refs;
+	}
+
+	async syncSchemaToGit(connectionName: string, schema: string): Promise<SchemaSyncResult> {
+		const refs = await this.listSchemaRefs(connectionName, schema);
+		const result: SchemaSyncResult = { succeeded: 0, failed: 0, skipped: 0, errors: [] };
+		if (refs.length === 0) {
+			return result;
+		}
+		await this.reloadIndexer(connectionName);
+		for (const ref of refs) {
+			try {
+				await this.syncToGitFile(ref, { deferUi: true });
+				result.succeeded++;
+			} catch (err) {
+				result.failed++;
+				result.errors.push({
+					ref,
+					message: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+		this.publishFileDecorations();
+		this.requestTreeRefresh();
+		return result;
+	}
+
+	async syncSchemaFromGitToDatabase(connectionName: string, schema: string): Promise<SchemaSyncResult> {
+		const refs = await this.listSchemaRefs(connectionName, schema);
+		const result: SchemaSyncResult = { succeeded: 0, failed: 0, skipped: 0, errors: [] };
+		if (refs.length === 0) {
+			return result;
+		}
+		const root = this.gitSettings.getRepositoryPath(connectionName);
+		if (!root) {
+			throw new Error('Git DDL folder is not configured for this connection');
+		}
+		await this.reloadIndexer(connectionName);
+		const indexer = this.indexersByPath.get(root);
+		if (!indexer) {
+			throw new Error('Git DDL indexer is not initialized');
+		}
+		for (const ref of refs) {
+			if (!indexer.getFilePath(ref.kind, ref.objectName)) {
+				result.skipped++;
+				continue;
+			}
+			try {
+				await this.syncFromGitToDatabase(ref, { deferUi: true });
+				result.succeeded++;
+			} catch (err) {
+				result.failed++;
+				result.errors.push({
+					ref,
+					message: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+		this.publishFileDecorations();
+		this.requestTreeRefresh();
+		return result;
 	}
 
 	prepareDiffUri(ref: GitObjectRef, dbDdl: string): vscode.Uri {
@@ -192,12 +410,78 @@ export class GitStatusCache {
 		return uri;
 	}
 
+	onConnectionDisconnected(connectionName: string): void {
+		++this.refreshGeneration;
+		this.refreshAgain = false;
+		if (this.refreshDebounceTimer) {
+			clearTimeout(this.refreshDebounceTimer);
+			this.refreshDebounceTimer = undefined;
+		}
+		if (this.decorationTimer) {
+			clearTimeout(this.decorationTimer);
+			this.decorationTimer = undefined;
+		}
+		if (this.scheduledConnection === connectionName) {
+			this.scheduledConnection = undefined;
+		}
+		this.clearCacheForConnections([connectionName]);
+		this.publishFileDecorations();
+		this.hideProgress();
+		this.requestTreeRefresh();
+	}
+
 	private indexerForConnection(connectionName: string): GitFileIndexer | undefined {
 		const root = this.gitSettings.getRepositoryPath(connectionName);
 		if (!root) {
 			return undefined;
 		}
 		return this.indexersByPath.get(root);
+	}
+
+	private async beginRefresh(): Promise<void> {
+		if (this.refreshRunning) {
+			this.refreshAgain = true;
+			return;
+		}
+		this.refreshRunning = true;
+		try {
+			const onlyConnection = this.scheduledConnection;
+			this.scheduledConnection = undefined;
+			await this.runRefresh(onlyConnection);
+		} finally {
+			this.refreshRunning = false;
+			if (this.refreshAgain) {
+				this.refreshAgain = false;
+				this.scheduleRefresh();
+			}
+		}
+	}
+
+	private requestTreeRefresh(): void {
+		this.onTreeRefreshEmitter.fire();
+	}
+
+	private scheduleDecorationUpdate(): void {
+		if (this.decorationTimer) {
+			return;
+		}
+		this.decorationTimer = setTimeout(() => {
+			this.decorationTimer = undefined;
+			if (this.refreshRunning) {
+				this.publishFileDecorations();
+			}
+		}, DECORATION_DEBOUNCE_MS);
+	}
+
+	private clearCacheForConnections(connectionNames: string[]): void {
+		for (const name of connectionNames) {
+			const prefix = `${name}:`;
+			for (const key of [...this.cache.keys()]) {
+				if (key.startsWith(prefix)) {
+					this.cache.delete(key);
+				}
+			}
+		}
 	}
 
 	private async runRefresh(onlyConnection?: string): Promise<void> {
@@ -211,37 +495,67 @@ export class GitStatusCache {
 
 		for (const name of allNames) {
 			if (!this.gitSettings.isCompareEnabled(name)) {
-				for (const key of [...this.cache.keys()]) {
-					if (key.startsWith(`${name}:`)) {
-						this.cache.delete(key);
-					}
-				}
+				this.clearCacheForConnections([name]);
 			}
 		}
 
 		if (enabled.length === 0) {
 			this.fileDecorationProvider.clear();
-			this.onUpdateEmitter.fire();
+			this.requestTreeRefresh();
 			return;
 		}
 
+		this.clearCacheForConnections(enabled);
+		for (const key of [...this.cache.keys()]) {
+			const ref = parseCacheKey(key);
+			if (!ref || !enabled.includes(ref.connectionName)) {
+				continue;
+			}
+			if (!this.isKindCompareEnabled(ref.connectionName, ref.kind)) {
+				this.cache.delete(key);
+			}
+		}
+		this.fileDecorationProvider.clear();
+		this.requestTreeRefresh();
+
 		const jobs: CompareJob[] = [];
+
 		for (const connName of enabled) {
-			const client = this.connectionManager.getConnectionByName(connName);
-			if (!client) {
+			if (!this.connectionManager.isConnected(connName)) {
 				continue;
 			}
 			const indexer = this.indexerForConnection(connName);
 			if (!indexer) {
 				continue;
 			}
+			const pooledClient = this.connectionManager.getConnectionByName(connName);
+			if (!pooledClient) {
+				continue;
+			}
+
 			try {
 				const [objects, routineDdlMap] = await Promise.all([
-					this.listObjects(client),
-					this.queryExecutor.fetchAllRoutineDdlMapOnClient(client),
+					this.listObjects(pooledClient, connName),
+					this.queryExecutor.fetchAllRoutineDdlMapOnClient(pooledClient, { skipLog: true }),
 				]);
+				const compareKinds = this.gitSettings.getCompareKinds(connName);
+				const seen = new Set<string>();
 				for (const obj of objects) {
-					jobs.push({ connectionName: connName, obj, indexer, routineDdlMap });
+					if (!compareKinds[obj.kind]) {
+						continue;
+					}
+					const dedupeKey = objectJobKey(obj);
+					if (seen.has(dedupeKey)) {
+						continue;
+					}
+					seen.add(dedupeKey);
+					jobs.push({
+						connectionName: connName,
+						obj,
+						indexer,
+						routineDdlMap,
+						client: pooledClient,
+					});
 				}
 			} catch (err) {
 				console.error(`Git DDL: failed to list objects for "${connName}":`, err);
@@ -254,14 +568,22 @@ export class GitStatusCache {
 		}
 
 		for (const connName of onlyConnection ? [onlyConnection] : allNames) {
-			if (!this.connectionManager.getConnectionByName(connName)) {
-				for (const key of [...this.cache.keys()]) {
-					if (key.startsWith(`${connName}:`)) {
-						this.cache.delete(key);
-					}
-				}
+			if (!this.connectionManager.isConnected(connName)) {
+				this.clearCacheForConnections([connName]);
 			}
 		}
+
+		for (const job of jobs) {
+			const ref: GitObjectRef = {
+				connectionName: job.connectionName,
+				schema: job.obj.schema,
+				kind: job.obj.kind,
+				objectName: job.obj.objectName,
+			};
+			this.cache.set(cacheKey(ref), { status: 'pending' });
+		}
+		this.publishFileDecorations();
+		this.requestTreeRefresh();
 
 		let done = 0;
 		const total = jobs.length;
@@ -274,6 +596,9 @@ export class GitStatusCache {
 					return;
 				}
 				const job = queue.shift()!;
+				if (!this.connectionManager.isConnected(job.connectionName)) {
+					continue;
+				}
 				const ref: GitObjectRef = {
 					connectionName: job.connectionName,
 					schema: job.obj.schema,
@@ -281,9 +606,14 @@ export class GitStatusCache {
 					objectName: job.obj.objectName,
 				};
 				const key = cacheKey(ref);
-				this.cache.set(key, { status: 'pending' });
 				try {
-					const status = await this.compareOne(ref, job.indexer, job.routineDdlMap);
+					const status = await this.compareOne(
+						ref,
+						job.indexer,
+						job.routineDdlMap,
+						job.client,
+						job.connectionName
+					);
 					if (gen === this.refreshGeneration) {
 						this.cache.set(key, status);
 					}
@@ -298,16 +628,24 @@ export class GitStatusCache {
 				done++;
 				this.showProgress(done, total);
 				if (gen === this.refreshGeneration) {
-					this.onUpdateEmitter.fire();
+					this.scheduleDecorationUpdate();
+				}
+				if (done % 8 === 0) {
+					await new Promise<void>((resolve) => setImmediate(resolve));
 				}
 			}
 		});
 
 		await Promise.all(workers);
+
 		this.hideProgress();
+		if (this.decorationTimer) {
+			clearTimeout(this.decorationTimer);
+			this.decorationTimer = undefined;
+		}
 		if (gen === this.refreshGeneration) {
 			this.publishFileDecorations();
-			this.onUpdateEmitter.fire();
+			this.requestTreeRefresh();
 		}
 	}
 
@@ -323,6 +661,9 @@ export class GitStatusCache {
 		for (const [key, status] of this.cache.entries()) {
 			const ref = parseCacheKey(key);
 			if (!ref || !this.isCompareEnabled(ref.connectionName)) {
+				continue;
+			}
+			if (!this.isKindCompareEnabled(ref.connectionName, ref.kind)) {
 				continue;
 			}
 			const uri = buildGitStatusTreeUri(ref);
@@ -344,7 +685,9 @@ export class GitStatusCache {
 	private async compareOne(
 		ref: GitObjectRef,
 		indexer: GitFileIndexer,
-		routineDdlMap: Map<string, string>
+		routineDdlMap: Map<string, string>,
+		client: pg.Client,
+		connectionName: string
 	): Promise<GitObjectStatus> {
 		const filePath = indexer.getFilePath(ref.kind, ref.objectName);
 		if (!filePath) {
@@ -367,15 +710,12 @@ export class GitStatusCache {
 		if ((ref.kind === 'function' || ref.kind === 'procedure') && routineDdlMap.has(routineKey)) {
 			dbDdl = routineDdlMap.get(routineKey)!;
 		} else {
-			const client = this.connectionManager.getConnectionByName(ref.connectionName);
-			if (!client) {
-				return { status: 'error', message: 'Not connected' };
-			}
 			dbDdl = await this.queryExecutor.getObjectDdlOnClient(
 				client,
 				ref.schema,
 				ref.objectName,
-				ref.kind
+				ref.kind,
+				{ skipLog: true, connectionName }
 			);
 		}
 
@@ -385,8 +725,10 @@ export class GitStatusCache {
 		return { status: 'diff', filePath };
 	}
 
-	private async listObjects(client: pg.Client): Promise<ListedObject[]> {
-		const res = await this.queryExecutor.executeQueryOnClient(client, `
+	private async listObjects(client: pg.Client, connectionName: string): Promise<ListedObject[]> {
+		const res = await this.queryExecutor.executeQueryOnClient(
+			client,
+			`
 			SELECT table_schema AS schema_name, table_name AS obj_name, 'table' AS kind
 			FROM information_schema.tables
 			WHERE table_schema NOT LIKE 'pg\\_%' ESCAPE '\\'
@@ -400,7 +742,9 @@ export class GitStatusCache {
 			  AND routine_schema <> 'information_schema'
 			  AND routine_type IN ('FUNCTION', 'PROCEDURE')
 			ORDER BY 1, 3, 2
-		`);
+		`,
+			{ skipLog: true, connectionName }
+		);
 
 		return res.rows.map((row) => ({
 			schema: String(row.schema_name),
@@ -428,7 +772,15 @@ export class GitStatusCache {
 	}
 
 	dispose(): void {
+		if (this.refreshDebounceTimer) {
+			clearTimeout(this.refreshDebounceTimer);
+			this.refreshDebounceTimer = undefined;
+		}
+		if (this.decorationTimer) {
+			clearTimeout(this.decorationTimer);
+			this.decorationTimer = undefined;
+		}
 		this.progressBar?.dispose();
-		this.onUpdateEmitter.dispose();
+		this.onTreeRefreshEmitter.dispose();
 	}
 }

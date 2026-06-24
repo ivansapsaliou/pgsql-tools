@@ -1,9 +1,10 @@
 import * as fs from 'fs';
 import * as vscode from 'vscode';
-import { GitStatusCache, GitObjectRef } from '../git/gitStatusCache';
+import { GitStatusCache, GitObjectRef, SchemaSyncResult } from '../git/gitStatusCache';
 import { resolveGitFilePath } from '../git/gitPaths';
 import { GitConnectionSettings } from '../git/gitConnectionSettings';
 import { ConnectionManager } from '../database/connectionManager';
+import { CommandLogService } from '../services/commandLogService';
 import { GitSettingsWebview } from '../views/gitSettingsWebview';
 import type { GitDdlObjectKind } from '../database/queryExecutor';
 import { stripGitStatusContextValue } from '../git/gitTreeContext';
@@ -34,12 +35,35 @@ function refFromTreeNode(node: {
 	};
 }
 
+function schemaFromTreeNode(node: {
+	parentSchema?: string;
+	label?: string | { label: string };
+	contextValue?: string;
+	connectionName?: string;
+}): { connectionName: string; schema: string } | undefined {
+	const kind = stripGitStatusContextValue(node.contextValue) ?? node.contextValue;
+	if (kind !== 'schema') {
+		return undefined;
+	}
+	const connectionName = node.connectionName;
+	const schema =
+		node.parentSchema ??
+		(typeof node.label === 'string' ? node.label : node.label?.label);
+	if (!connectionName || !schema) {
+		return undefined;
+	}
+	return { connectionName, schema: String(schema) };
+}
+
 function resolveTreeNode(
 	node: unknown,
 	treeView?: vscode.TreeView<TreeNode>
 ): TreeNode | undefined {
 	const n = node as TreeNode | undefined;
 	if (n?.connectionName && n.parentSchema) {
+		return n;
+	}
+	if (n?.connectionName && stripGitStatusContextValue(n.contextValue) === 'schema') {
 		return n;
 	}
 	return treeView?.selection?.[0];
@@ -73,6 +97,42 @@ async function resolveLeftGitUri(
 	return emptyDoc.uri;
 }
 
+function ensureGitCompareEnabled(
+	gitSettings: GitConnectionSettings,
+	connectionName: string
+): boolean {
+	if (!gitSettings.isCompareEnabled(connectionName)) {
+		vscode.window.showWarningMessage(
+			'Git comparison is disabled for this connection. Enable it in Git DDL settings.'
+		);
+		return false;
+	}
+	return true;
+}
+
+function showSchemaSyncSummary(schema: string, result: SchemaSyncResult): void {
+	const parts = [`${result.succeeded} succeeded`];
+	if (result.skipped > 0) {
+		parts.push(`${result.skipped} skipped`);
+	}
+	if (result.failed > 0) {
+		parts.push(`${result.failed} failed`);
+	}
+	const headline = `Schema ${schema}: ${parts.join(', ')}`;
+	if (result.failed === 0) {
+		vscode.window.showInformationMessage(headline);
+		return;
+	}
+	const detail = result.errors
+		.slice(0, 5)
+		.map((e) => `${e.ref.kind} ${e.ref.objectName}: ${e.message}`)
+		.join('\n');
+	vscode.window.showWarningMessage(
+		headline,
+		{ modal: true, detail: result.errors.length > 5 ? `${detail}\n…` : detail }
+	);
+}
+
 async function runGitDdlDiff(
 	node: unknown,
 	gitStatusCache: GitStatusCache,
@@ -82,12 +142,15 @@ async function runGitDdlDiff(
 	const treeNode = resolveTreeNode(node, treeView);
 	const ref = treeNode ? refFromTreeNode(treeNode) : undefined;
 	if (!ref) {
-		vscode.window.showWarningMessage('Выберите таблицу, функцию или процедуру в дереве.');
+		vscode.window.showWarningMessage('Select a table, function, or procedure in the tree.');
 		return;
 	}
-	if (!gitSettings.isCompareEnabled(ref.connectionName)) {
+	if (!ensureGitCompareEnabled(gitSettings, ref.connectionName)) {
+		return;
+	}
+	if (!gitSettings.isKindCompareEnabled(ref.connectionName, ref.kind)) {
 		vscode.window.showWarningMessage(
-			'Сравнение с Git отключено для этого подключения. Включите в настройках Git DDL.'
+			`Git comparison for ${ref.kind} is disabled in Git DDL settings.`
 		);
 		return;
 	}
@@ -100,7 +163,7 @@ async function runGitDdlDiff(
 		await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, title);
 	} catch (err) {
 		vscode.window.showErrorMessage(
-			`Не удалось открыть сравнение: ${err instanceof Error ? err.message : String(err)}`
+			`Failed to open comparison: ${err instanceof Error ? err.message : String(err)}`
 		);
 	}
 }
@@ -110,9 +173,13 @@ export function registerGitDdlCommands(
 	connectionManager: ConnectionManager,
 	gitSettings: GitConnectionSettings,
 	gitStatusCache: GitStatusCache,
+	commandLogService: CommandLogService,
 	getTreeView: () => vscode.TreeView<TreeNode> | undefined,
 	onGitSettingsChanged: () => void
 ): void {
+	const logCmd = (connectionName: string, commandId: string, detail?: string) => {
+		void commandLogService.logCommand(connectionName, commandId, detail);
+	};
 	const compare = (node: unknown) =>
 		runGitDdlDiff(node, gitStatusCache, gitSettings, getTreeView());
 
@@ -124,11 +191,15 @@ export function registerGitDdlCommands(
 		vscode.commands.registerCommand('pgsql-tools.refreshGitStatus', () => {
 			if (!gitStatusCache.hasAnyCompareEnabled()) {
 				vscode.window.showWarningMessage(
-					'Нет подключений с включённым сравнением Git. Откройте настройки Git DDL.'
+					'No connections with Git comparison enabled. Open Git DDL settings.'
 				);
 				return;
 			}
-			gitStatusCache.scheduleRefresh();
+			gitStatusCache.scheduleRefresh(undefined, { immediate: true });
+			const active = connectionManager.getActiveConnectionName();
+			if (active) {
+				logCmd(active, 'pgsql-tools.refreshGitStatus');
+			}
 		}),
 
 		vscode.commands.registerCommand('pgsql-tools.showGitDdlDiff', compare),
@@ -140,28 +211,182 @@ export function registerGitDdlCommands(
 			const treeNode = resolveTreeNode(node, getTreeView());
 			const ref = treeNode ? refFromTreeNode(treeNode) : undefined;
 			if (!ref) {
-				vscode.window.showWarningMessage('Выберите таблицу, функцию или процедуру в дереве.');
+				vscode.window.showWarningMessage('Select a table, function, or procedure in the tree.');
 				return;
 			}
-			const root = gitSettings.getRepositoryPath(ref.connectionName);
-			if (!root) {
-				vscode.window.showWarningMessage('Укажите каталог Git DDL для этого подключения.');
+			if (!gitSettings.getRepositoryPath(ref.connectionName)) {
+				vscode.window.showWarningMessage('Set a Git DDL folder for this connection.');
+				return;
+			}
+			if (!gitSettings.isKindCompareEnabled(ref.connectionName, ref.kind)) {
+				vscode.window.showWarningMessage(
+					`Sync for ${ref.kind} is disabled in Git DDL settings.`
+				);
 				return;
 			}
 			const confirm = await vscode.window.showWarningMessage(
-				`Записать DDL из БД в файл Git?\n${ref.connectionName}: ${ref.schema}.${ref.objectName}`,
+				`Write DDL from database to Git?\n${ref.connectionName}: ${ref.schema}.${ref.objectName}`,
 				{ modal: true },
-				'Записать'
+				'Sync to Git'
 			);
-			if (confirm !== 'Записать') {
+			if (confirm !== 'Sync to Git') {
 				return;
 			}
 			try {
 				const filePath = await gitStatusCache.syncToGitFile(ref);
-				vscode.window.showInformationMessage(`Сохранено: ${filePath}`);
+				logCmd(
+					ref.connectionName,
+					'pgsql-tools.syncGitDdlFromDatabase',
+					`schema=${ref.schema} object=${ref.objectName} kind=${ref.kind}`
+				);
+				gitStatusCache.scheduleRefresh(ref.connectionName);
+				vscode.window.showInformationMessage(`Synced to Git: ${filePath}`);
 			} catch (err) {
 				vscode.window.showErrorMessage(
-					`Синхронизация не удалась: ${err instanceof Error ? err.message : String(err)}`
+					`Sync failed: ${err instanceof Error ? err.message : String(err)}`
+				);
+			}
+		}),
+
+		vscode.commands.registerCommand('pgsql-tools.syncGitDdlToDatabase', async (node) => {
+			const treeNode = resolveTreeNode(node, getTreeView());
+			const ref = treeNode ? refFromTreeNode(treeNode) : undefined;
+			if (!ref) {
+				vscode.window.showWarningMessage('Select a table, function, or procedure in the tree.');
+				return;
+			}
+			if (!gitSettings.getRepositoryPath(ref.connectionName)) {
+				vscode.window.showWarningMessage('Set a Git DDL folder for this connection.');
+				return;
+			}
+			if (!gitSettings.isKindCompareEnabled(ref.connectionName, ref.kind)) {
+				vscode.window.showWarningMessage(
+					`Sync for ${ref.kind} is disabled in Git DDL settings.`
+				);
+				return;
+			}
+			const warning =
+				ref.kind === 'table'
+					? `Apply DDL from Git to database?\nTable ${ref.schema}.${ref.objectName} will be recreated (DROP CASCADE).\n${ref.connectionName}`
+					: `Apply DDL from Git to database?\n${ref.connectionName}: ${ref.schema}.${ref.objectName}`;
+			const confirm = await vscode.window.showWarningMessage(
+				warning,
+				{ modal: true },
+				'Sync from Git'
+			);
+			if (confirm !== 'Sync from Git') {
+				return;
+			}
+			try {
+				await gitStatusCache.syncFromGitToDatabase(ref);
+				logCmd(
+					ref.connectionName,
+					'pgsql-tools.syncGitDdlToDatabase',
+					`schema=${ref.schema} object=${ref.objectName} kind=${ref.kind}`
+				);
+				gitStatusCache.scheduleRefresh(ref.connectionName);
+				vscode.window.showInformationMessage(
+					`Applied from Git: ${ref.schema}.${ref.objectName}`
+				);
+			} catch (err) {
+				vscode.window.showErrorMessage(
+					`Failed to apply from Git: ${err instanceof Error ? err.message : String(err)}`
+				);
+			}
+		}),
+
+		vscode.commands.registerCommand('pgsql-tools.syncGitSchemaToGit', async (node) => {
+			const treeNode = resolveTreeNode(node, getTreeView());
+			const ctx = treeNode ? schemaFromTreeNode(treeNode) : undefined;
+			if (!ctx) {
+				vscode.window.showWarningMessage('Select a schema in the tree.');
+				return;
+			}
+			if (!ensureGitCompareEnabled(gitSettings, ctx.connectionName)) {
+				return;
+			}
+			if (!gitSettings.getRepositoryPath(ctx.connectionName)) {
+				vscode.window.showWarningMessage('Set a Git DDL folder for this connection.');
+				return;
+			}
+			const confirm = await vscode.window.showWarningMessage(
+				`Write all DDL from database to Git for schema «${ctx.schema}»?\nConnection: ${ctx.connectionName}`,
+				{ modal: true },
+				'Sync Schema to Git'
+			);
+			if (confirm !== 'Sync Schema to Git') {
+				return;
+			}
+			try {
+				const result = await vscode.window.withProgress(
+					{
+						location: vscode.ProgressLocation.Notification,
+						title: `Sync schema ${ctx.schema} to Git`,
+						cancellable: false,
+					},
+					async (progress) => {
+						progress.report({ message: 'Loading objects…' });
+						return gitStatusCache.syncSchemaToGit(ctx.connectionName, ctx.schema);
+					}
+				);
+				gitStatusCache.scheduleRefresh(ctx.connectionName);
+				logCmd(
+					ctx.connectionName,
+					'pgsql-tools.syncGitSchemaToGit',
+					`schema=${ctx.schema} succeeded=${result.succeeded} failed=${result.failed}`
+				);
+				showSchemaSyncSummary(ctx.schema, result);
+			} catch (err) {
+				vscode.window.showErrorMessage(
+					`Schema sync failed: ${err instanceof Error ? err.message : String(err)}`
+				);
+			}
+		}),
+
+		vscode.commands.registerCommand('pgsql-tools.syncGitSchemaFromGit', async (node) => {
+			const treeNode = resolveTreeNode(node, getTreeView());
+			const ctx = treeNode ? schemaFromTreeNode(treeNode) : undefined;
+			if (!ctx) {
+				vscode.window.showWarningMessage('Select a schema in the tree.');
+				return;
+			}
+			if (!ensureGitCompareEnabled(gitSettings, ctx.connectionName)) {
+				return;
+			}
+			if (!gitSettings.getRepositoryPath(ctx.connectionName)) {
+				vscode.window.showWarningMessage('Set a Git DDL folder for this connection.');
+				return;
+			}
+			const confirm = await vscode.window.showWarningMessage(
+				`Apply DDL from Git to database for schema «${ctx.schema}»?\nTables will be recreated (DROP CASCADE). Objects without Git files are skipped.\nConnection: ${ctx.connectionName}`,
+				{ modal: true },
+				'Sync Schema from Git'
+			);
+			if (confirm !== 'Sync Schema from Git') {
+				return;
+			}
+			try {
+				const result = await vscode.window.withProgress(
+					{
+						location: vscode.ProgressLocation.Notification,
+						title: `Sync schema ${ctx.schema} from Git`,
+						cancellable: false,
+					},
+					async (progress) => {
+						progress.report({ message: 'Applying DDL…' });
+						return gitStatusCache.syncSchemaFromGitToDatabase(ctx.connectionName, ctx.schema);
+					}
+				);
+				gitStatusCache.scheduleRefresh(ctx.connectionName);
+				logCmd(
+					ctx.connectionName,
+					'pgsql-tools.syncGitSchemaFromGit',
+					`schema=${ctx.schema} succeeded=${result.succeeded} failed=${result.failed} skipped=${result.skipped}`
+				);
+				showSchemaSyncSummary(ctx.schema, result);
+			} catch (err) {
+				vscode.window.showErrorMessage(
+					`Schema sync failed: ${err instanceof Error ? err.message : String(err)}`
 				);
 			}
 		})

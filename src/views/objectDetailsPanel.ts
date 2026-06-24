@@ -3,6 +3,8 @@ import * as fs from 'fs';
 import { QueryExecutor, QueryResult, IndexInfo, ForeignKeyInfo, ConstraintInfo } from '../database/queryExecutor';
 import { ConnectionManager } from '../database/connectionManager';
 import { ResultsViewProvider } from './resultsPanel';
+import { SqlSchemaRegistry } from '../language/sqlSchemaRegistry';
+import { computeSqlCompletions } from '../language/sqlCompletionService';
 
 function esc(text: string): string {
 	const map: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
@@ -71,6 +73,11 @@ function svgToUri(svg: string): vscode.Uri {
 export class ObjectDetailsPanel {
 	private static panels: Map<string, vscode.WebviewPanel> = new Map();
 	private static pendingOpen: Map<string, ReturnType<typeof setTimeout>> = new Map();
+	private static sqlSchemaRegistry: SqlSchemaRegistry | undefined;
+
+	static configureIntelliSense(registry: SqlSchemaRegistry): void {
+		this.sqlSchemaRegistry = registry;
+	}
 
 	static async show(
 		context: vscode.ExtensionContext,
@@ -138,6 +145,39 @@ export class ObjectDetailsPanel {
 
 		panel.webview.onDidReceiveMessage(async (message) => {
 			switch (message.command) {
+				case 'requestSqlCompletion': {
+					if (!this.sqlSchemaRegistry) {
+						panel.webview.postMessage({
+							command: 'sqlCompletionResult',
+							requestId: message.requestId,
+							items: [],
+							isIncomplete: false,
+						});
+						break;
+					}
+					try {
+						const result = await computeSqlCompletions(
+							this.sqlSchemaRegistry,
+							String(message.text ?? ''),
+							Number(message.offset ?? 0)
+						);
+						panel.webview.postMessage({
+							command: 'sqlCompletionResult',
+							requestId: message.requestId,
+							items: result.items,
+							isIncomplete: result.isIncomplete,
+						});
+					} catch {
+						panel.webview.postMessage({
+							command: 'sqlCompletionResult',
+							requestId: message.requestId,
+							items: [],
+							isIncomplete: false,
+						});
+					}
+					break;
+				}
+
 				case 'openInResults':
 					if (!resultsViewProvider) { break; }
 					try {

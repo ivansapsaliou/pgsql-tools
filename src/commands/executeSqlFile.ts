@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { QueryExecutor } from '../database/queryExecutor';
 import { ConnectionManager } from '../database/connectionManager';
 import { ResultsViewProvider } from '../views/resultsPanel';
+import type { CommandLogService } from '../services/commandLogService';
 
 /**
  * Split SQL text into individual statements, respecting:
@@ -77,7 +78,8 @@ export class ExecuteSqlFileCommand {
 	static register(
 		queryExecutor: QueryExecutor,
 		connectionManager: ConnectionManager,
-		resultsViewProvider: ResultsViewProvider
+		resultsViewProvider: ResultsViewProvider,
+		commandLogService?: CommandLogService
 	) {
 		return vscode.commands.registerCommand('pgsql-tools.executeSqlFile', async () => {
 			const editor = vscode.window.activeTextEditor;
@@ -122,6 +124,11 @@ export class ExecuteSqlFileCommand {
 			}
 
 			try {
+				void commandLogService?.logCommand(
+					activeConnection,
+					'pgsql-tools.executeSqlFile',
+					`statements=${statements.length} file=${editor.document.uri.fsPath}`
+				);
 				await vscode.window.withProgress(
 					{
 						location: vscode.ProgressLocation.Notification,

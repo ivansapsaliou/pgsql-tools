@@ -2,7 +2,7 @@
 	"name": "pgsql-tools",
 	"displayName": "PostgreSQL Tools",
 	"description": "PostgreSQL database management tool for VS Code",
-	"version": "0.2.4",
+	"version": "0.2.5",
 	"publisher": "ivansapsaliou",
 	"icon": "resources/icon.png",
 	"engines": {
@@ -14,6 +14,19 @@
 	"activationEvents": [],
 	"main": "./out/extension.js",
 	"contributes": {
+		"configurationDefaults": {
+			"[sql]": {
+				"editor.quickSuggestions": {
+					"other": "on",
+					"comments": "off",
+					"strings": "off"
+				},
+				"editor.suggestOnTriggerCharacters": true,
+				"editor.wordBasedSuggestions": "off",
+				"editor.suggest.showKeywords": true,
+				"editor.tabCompletion": "on"
+			}
+		},
 		"configuration": {
 			"title": "PostgreSQL Tools",
 			"properties": {
@@ -31,6 +44,17 @@
 					"type": "boolean",
 					"default": true,
 					"description": "Показывать DDL объекта во всплывающей подсказке при наведении."
+				},
+				"pgsql-tools.intelliSense.enabled": {
+					"type": "boolean",
+					"default": true,
+					"description": "Включить автодополнение SQL и Signature Help для PostgreSQL."
+				},
+				"pgsql-tools.intelliSense.refreshIntervalMs": {
+					"type": "number",
+					"default": 60000,
+					"minimum": 5000,
+					"description": "Интервал обновления кэша схемы для IntelliSense (мс)."
 				}
 			}
 		},
@@ -251,22 +275,48 @@
 			},
 			{
 				"command": "pgsql-tools.gitCompareInSync",
-				"title": "Сравнить с Git",
+				"title": "Compare with Git",
 				"icon": "$(check)"
 			},
 			{
 				"command": "pgsql-tools.gitCompareDiff",
-				"title": "Сравнить с Git",
+				"title": "Compare with Git",
 				"icon": "$(compare-changes)"
 			},
 			{
 				"command": "pgsql-tools.gitCompareMissing",
-				"title": "Сравнить с Git",
+				"title": "Compare with Git",
 				"icon": "$(warning)"
 			},
 			{
 				"command": "pgsql-tools.syncGitDdlFromDatabase",
-				"title": "PostgreSQL: Sync DDL to Git File"
+				"title": "Sync DDL to Git",
+				"icon": "$(cloud-upload)"
+			},
+			{
+				"command": "pgsql-tools.syncGitDdlToDatabase",
+				"title": "Sync DDL from Git",
+				"icon": "$(cloud-download)"
+			},
+			{
+				"command": "pgsql-tools.syncGitSchemaToGit",
+				"title": "Sync Schema DDL to Git",
+				"icon": "$(cloud-upload)"
+			},
+			{
+				"command": "pgsql-tools.syncGitSchemaFromGit",
+				"title": "Sync Schema DDL from Git",
+				"icon": "$(cloud-download)"
+			},
+			{
+				"command": "pgsql-tools.configureCommandLog",
+				"title": "PostgreSQL: Command Log Settings…",
+				"icon": "$(output)"
+			},
+			{
+				"command": "pgsql-tools.viewConnectionCommandLog",
+				"title": "View Command Log",
+				"icon": "$(history)"
 			},
 			{
 				"command": "pgsql-tools.debugRoutine",
@@ -335,6 +385,11 @@
 					"command": "pgsql-tools.refreshGitStatus",
 					"when": "view == pgsqlDatabases",
 					"group": "navigation@5"
+				},
+				{
+					"command": "pgsql-tools.configureCommandLog",
+					"when": "view == pgsqlDatabases",
+					"group": "navigation@6"
 				}
 			],
 			"view/item/context": [
@@ -366,6 +421,11 @@
 				{
 					"command": "pgsql-tools.showHealth",
 					"when": "view == pgsqlDatabases && viewItem == connection",
+					"group": "context@1"
+				},
+				{
+					"command": "pgsql-tools.viewConnectionCommandLog",
+					"when": "view == pgsqlDatabases && (viewItem == connection || viewItem == connection_disconnected)",
 					"group": "context@1"
 				},
 				{
@@ -419,6 +479,21 @@
 					"group": "context@8"
 				},
 				{
+					"command": "pgsql-tools.syncGitDdlToDatabase",
+					"when": "view == pgsqlDatabases && (viewItem == table || viewItem == function || viewItem == procedure || viewItem =~ /^(table|function|procedure)\\+git-/)",
+					"group": "context@8"
+				},
+				{
+					"command": "pgsql-tools.syncGitSchemaToGit",
+					"when": "view == pgsqlDatabases && viewItem == schema",
+					"group": "context@7"
+				},
+				{
+					"command": "pgsql-tools.syncGitSchemaFromGit",
+					"when": "view == pgsqlDatabases && viewItem == schema",
+					"group": "context@7"
+				},
+				{
 					"command": "pgsql-tools.debugRoutine",
 					"when": "view == pgsqlDatabases && (viewItem == function || viewItem == procedure || viewItem =~ /^(function|procedure)\\+git-/)",
 					"group": "context@9"
@@ -470,6 +545,10 @@
 					"when": "pgsqlToolsActive"
 				},
 				{
+					"command": "pgsql-tools.configureCommandLog",
+					"when": "pgsqlToolsActive"
+				},
+				{
 					"command": "pgsql-tools.refreshGitStatus",
 					"when": "pgsqlToolsActive"
 				},
@@ -479,6 +558,22 @@
 				},
 				{
 					"command": "pgsql-tools.syncGitDdlFromDatabase",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.syncGitDdlToDatabase",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.syncGitSchemaToGit",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.syncGitSchemaFromGit",
+					"when": "pgsqlToolsActive"
+				},
+				{
+					"command": "pgsql-tools.viewConnectionCommandLog",
 					"when": "pgsqlToolsActive"
 				},
 				{
@@ -539,7 +634,7 @@
 		"compile": "tsc -p ./ && npm run copy:codicons",
 		"watch": "tsc -watch -p ./",
 		"pretest": "npm run compile && npm run lint",
-		"test": "npm run compile && node --test out/debug/__tests__/plpgsqlParse.test.js",
+		"test": "npm run compile && node --test out/debug/__tests__/plpgsqlParse.test.js out/language/__tests__/sqlParser.test.js out/language/__tests__/sqlCompletionContext.test.js",
 		"lint": "eslint src --ext ts"
 	},
 	"devDependencies": {

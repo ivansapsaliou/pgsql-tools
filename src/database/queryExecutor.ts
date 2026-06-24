@@ -1,11 +1,17 @@
 import * as pg from 'pg';
 import { ConnectionManager } from './connectionManager';
 import { normalizeRoutineDollarQuotes, stripProcedureInParams } from '../git/gitRoutineDdl';
+import type { CommandLogService } from '../services/commandLogService';
 
 export interface QueryResult {
 	rows: any[];
 	rowCount: number;
 	fields: any[];
+}
+
+export interface QueryExecutorOptions {
+	skipLog?: boolean;
+	connectionName?: string;
 }
 
 export interface IndexInfo {
@@ -55,8 +61,27 @@ export interface RoutineParameterInfo {
 
 export class QueryExecutor {
 	private perClientQueue: WeakMap<pg.Client, Promise<void>> = new WeakMap();
+	private nestedQueryOptions: QueryExecutorOptions | undefined;
+	private commandLogService: CommandLogService | undefined;
 
 	constructor(private connectionManager: ConnectionManager) {}
+
+	setCommandLogService(service: CommandLogService): void {
+		this.commandLogService = service;
+	}
+
+	private resolveConnectionName(client: pg.Client, options?: QueryExecutorOptions): string {
+		return (
+			options?.connectionName ??
+			this.nestedQueryOptions?.connectionName ??
+			this.connectionManager.getConnectionNameByClient(client) ??
+			'unknown'
+		);
+	}
+
+	private shouldSkipLog(options?: QueryExecutorOptions): boolean {
+		return !!(options?.skipLog ?? this.nestedQueryOptions?.skipLog);
+	}
 
 	async executeQuery(query: string): Promise<QueryResult> {
 		const client = this.connectionManager.getActiveConnection();
@@ -81,17 +106,36 @@ export class QueryExecutor {
 	/**
 	 * Execute a query on a specific pg.Client (without changing the active connection).
 	 */
-	async executeQueryOnClient(client: pg.Client, query: string): Promise<QueryResult> {
-		// pg discourages concurrent .query() calls on the same Client; serialize per-client.
+	async executeQueryOnClient(
+		client: pg.Client,
+		query: string,
+		options?: QueryExecutorOptions
+	): Promise<QueryResult> {
+		const connectionName = this.resolveConnectionName(client, options);
+		const skipLog = this.shouldSkipLog(options);
 		return this.enqueueOnClient(client, async () => {
+			const started = Date.now();
 			try {
 				const result = await client.query(query);
-				return {
+				const response = {
 					rows: result.rows,
 					rowCount: result.rowCount || 0,
-					fields: result.fields
+					fields: result.fields,
 				};
+				if (!skipLog && this.commandLogService) {
+					void this.commandLogService.logSql(connectionName, query, {
+						durationMs: Date.now() - started,
+						rowCount: response.rowCount,
+					});
+				}
+				return response;
 			} catch (error) {
+				if (!skipLog && this.commandLogService) {
+					void this.commandLogService.logSql(connectionName, query, {
+						durationMs: Date.now() - started,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
 				throw new Error(`Query execution failed: ${error}`);
 			}
 		});
@@ -102,18 +146,35 @@ export class QueryExecutor {
 	 */
 	async executeQueryArrayOnClient(
 		client: pg.Client,
-		query: string
+		query: string,
+		options?: QueryExecutorOptions
 	): Promise<{ rows: any[][]; rowCount: number; fields: any[] }> {
+		const connectionName = this.resolveConnectionName(client, options);
+		const skipLog = this.shouldSkipLog(options);
 		return this.enqueueOnClient(client, async () => {
+			const started = Date.now();
 			try {
 				// pg typings don't strongly type rowMode in all versions; cast to any to keep compatibility.
 				const result = await client.query({ text: query, rowMode: 'array' } as any);
-				return {
+				const response = {
 					rows: (result.rows as any[]) as any[][],
 					rowCount: result.rowCount || 0,
-					fields: result.fields
+					fields: result.fields,
 				};
+				if (!skipLog && this.commandLogService) {
+					void this.commandLogService.logSql(connectionName, query, {
+						durationMs: Date.now() - started,
+						rowCount: response.rowCount,
+					});
+				}
+				return response;
 			} catch (error) {
+				if (!skipLog && this.commandLogService) {
+					void this.commandLogService.logSql(connectionName, query, {
+						durationMs: Date.now() - started,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
 				throw new Error(`Query execution failed: ${error}`);
 			}
 		});
@@ -354,7 +415,10 @@ export class QueryExecutor {
 	 * Один запрос: DDL всех функций и процедур (для пакетного сравнения с Git).
 	 * Ключ: `${schema}:function|procedure:${name}`
 	 */
-	async fetchAllRoutineDdlMapOnClient(client: pg.Client): Promise<Map<string, string>> {
+	async fetchAllRoutineDdlMapOnClient(
+		client: pg.Client,
+		options?: QueryExecutorOptions
+	): Promise<Map<string, string>> {
 		const res = await this.executeQueryOnClient(client, `
 			SELECT
 				n.nspname AS schema_name,
@@ -367,7 +431,7 @@ export class QueryExecutor {
 			  AND n.nspname <> 'information_schema'
 			  AND p.prokind IN ('f', 'p')
 			ORDER BY n.nspname, p.proname
-		`);
+		`, options);
 
 		const map = new Map<string, string>();
 		for (const row of res.rows) {
@@ -638,15 +702,22 @@ export class QueryExecutor {
 		client: pg.Client,
 		schema: string,
 		objectName: string,
-		kind: GitDdlObjectKind
+		kind: GitDdlObjectKind,
+		options?: QueryExecutorOptions
 	): Promise<string> {
-		switch (kind) {
-			case 'table':
-				return this.getTableDDLOnClient(client, schema, objectName);
-			case 'function':
-				return this.getFunctionDDLOnClient(client, schema, objectName);
-			case 'procedure':
-				return this.getProcedureDDLOnClient(client, schema, objectName);
+		const prev = this.nestedQueryOptions;
+		this.nestedQueryOptions = options;
+		try {
+			switch (kind) {
+				case 'table':
+					return this.getTableDDLOnClient(client, schema, objectName);
+				case 'function':
+					return this.getFunctionDDLOnClient(client, schema, objectName);
+				case 'procedure':
+					return this.getProcedureDDLOnClient(client, schema, objectName);
+			}
+		} finally {
+			this.nestedQueryOptions = prev;
 		}
 	}
 

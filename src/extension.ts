@@ -6,8 +6,8 @@ import { ConnectionWebview } from './views/connectionWebview';
 import { QueryEditorPanel } from './views/queryEditorPanel';
 import { ObjectDetailsPanel } from './views/objectDetailsPanel';
 import { ResultsViewProvider } from './views/resultsPanel';
-import { SQLCompletionProvider } from './language/sqlCompletionProvider';
 import { SqlSchemaRegistry } from './language/sqlSchemaRegistry';
+import { registerSqlIntelliSense } from './language/registerSqlIntelliSense';
 import { registerSqlObjectLanguageFeatures } from './language/registerSqlObjectLanguageFeatures';
 import { ObjectDdlEditor } from './services/objectDdlEditor';
 import { ExecuteSqlFileCommand } from './commands/executeSqlFile';
@@ -20,6 +20,9 @@ import { GitDdlFileDecorationProvider } from './git/gitFileDecorationProvider';
 import { GitStatusCache } from './git/gitStatusCache';
 import { GitConnectionSettings } from './git/gitConnectionSettings';
 import { registerGitDdlCommands } from './commands/gitDdlCommands';
+import { registerCommandLogCommands } from './commands/commandLogCommands';
+import { CommandLogSettings } from './services/commandLogSettings';
+import { CommandLogService } from './services/commandLogService';
 import { TreeSearchWebviewProvider } from './views/treeSearchWebview';
 import { TreeSearchSettings } from './search/treeSearchSettings';
 import type { TreeSearchObjectKind } from './search/treeSearchSettings';
@@ -34,7 +37,7 @@ import { ddlDocumentKey } from './services/objectDdlEditor';
 let connectionManager: ConnectionManager;
 let databaseTreeProvider: PostgreSQLTreeDataProvider;
 let queryExecutor: QueryExecutor;
-let sqlCompletionProvider: SQLCompletionProvider;
+let sqlCompletionProvider: ReturnType<typeof registerSqlIntelliSense>;
 let sqlSchemaRegistry: SqlSchemaRegistry;
 let objectDdlEditor: ObjectDdlEditor;
 let resultsViewProvider: ResultsViewProvider;
@@ -42,6 +45,8 @@ let connectionStatusBar: vscode.StatusBarItem;
 let sqlCodeLensEmitter: vscode.EventEmitter<void>;
 let gitStatusCache: GitStatusCache;
 let gitConnectionSettings: GitConnectionSettings;
+let commandLogSettings: CommandLogSettings;
+let commandLogService: CommandLogService;
 let gitFileWatchers: vscode.FileSystemWatcher[] = [];
 let gitFileWatcherDebounce: ReturnType<typeof setTimeout> | undefined;
 const routineDdlOriginalText = new Map<string, string>();
@@ -155,19 +160,21 @@ function registerExtensionCommands(context: vscode.ExtensionContext): void {
 			if (ok) {
 				refreshConnectionUiRef();
 				if (gitConnectionSettings.isCompareEnabled(name)) {
-					gitStatusCache.scheduleRefresh(name);
+					gitStatusCache.scheduleRefresh(name, { immediate: true });
 				}
+				void commandLogService.logCommand(name, 'pgsql-tools.connectConnection');
 				vscode.window.showInformationMessage(`Connected: ${name}`);
 			}
 		}),
 		vscode.commands.registerCommand('pgsql-tools.disconnectConnection', async (node: any) => {
 			const name = node?.connectionName ?? node?.label;
 			if (!name) return;
+			void commandLogService.logCommand(name, 'pgsql-tools.disconnectConnection');
 			await connectionManager.disconnect(name);
 			refreshConnectionUiRef();
 			vscode.window.showInformationMessage(`Disconnected: ${name}`);
 		}),
-		ExecuteSqlFileCommand.register(queryExecutor, connectionManager, resultsViewProvider),
+		ExecuteSqlFileCommand.register(queryExecutor, connectionManager, resultsViewProvider, commandLogService),
 		SchemaDiffCommand.register(queryExecutor, connectionManager, context),
 		...ShowERDCommand.register(queryExecutor, connectionManager, context),
 		...HealthCommands.registerAll(queryExecutor, connectionManager, context),
@@ -179,9 +186,11 @@ function registerExtensionCommands(context: vscode.ExtensionContext): void {
 		connectionManager,
 		gitConnectionSettings,
 		gitStatusCache,
+		commandLogService,
 		() => databaseTreeViewRef,
 		() => onGitSettingsChangedRef()
 	);
+	registerCommandLogCommands(context, commandLogSettings, commandLogService);
 }
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -199,12 +208,21 @@ export async function activate(context: vscode.ExtensionContext) {
 
 async function activateExtension(context: vscode.ExtensionContext): Promise<void> {
 	connectionManager = new ConnectionManager(context);
+	context.subscriptions.push(connectionManager);
 	const treeSearchSettings = new TreeSearchSettings(context);
 	databaseTreeProvider = new PostgreSQLTreeDataProvider(connectionManager);
 	databaseTreeProvider.setTreeSearchSettings(treeSearchSettings);
 	queryExecutor = new QueryExecutor(connectionManager);
+	commandLogSettings = new CommandLogSettings(context);
+	commandLogService = new CommandLogService(commandLogSettings);
+	queryExecutor.setCommandLogService(commandLogService);
 	sqlSchemaRegistry = new SqlSchemaRegistry(queryExecutor, connectionManager);
-	sqlCompletionProvider = new SQLCompletionProvider(sqlSchemaRegistry);
+	ObjectDetailsPanel.configureIntelliSense(sqlSchemaRegistry);
+	sqlCompletionProvider = registerSqlIntelliSense(context, {
+		schemaRegistry: sqlSchemaRegistry,
+		connectionManager,
+		queryExecutor,
+	});
 	resultsViewProvider = new ResultsViewProvider(context.extensionUri);
 	const plpgsqlDebugPanel = new PlpgsqlDebugViewProvider(context.extensionUri);
 	const debugBreakpointStore = new DebugBreakpointStore(context);
@@ -238,7 +256,12 @@ async function activateExtension(context: vscode.ExtensionContext): Promise<void
 	);
 	databaseTreeProvider.setGitStatusCache(gitStatusCache);
 	context.subscriptions.push(gitStatusCache);
-	gitStatusCache.onDidUpdate(() => databaseTreeProvider.refresh());
+	gitStatusCache.onDidRequestTreeRefresh(() => databaseTreeProvider.refresh());
+	context.subscriptions.push(
+		connectionManager.onConnectionLost((name) => {
+			gitStatusCache.onConnectionDisconnected(name);
+		})
+	);
 
 	registerExtensionCommands(context);
 
@@ -262,8 +285,11 @@ async function activateExtension(context: vscode.ExtensionContext): Promise<void
 				}
 				gitFileWatcherDebounce = setTimeout(() => {
 					gitFileWatcherDebounce = undefined;
+					if (!gitStatusCache.hasConnectedCompareEnabled()) {
+						return;
+					}
 					void gitStatusCache.reloadIndexer().then(() => gitStatusCache.scheduleRefresh());
-				}, 400);
+				}, 2500);
 			};
 			watcher.onDidChange(onFsChange);
 			watcher.onDidCreate(onFsChange);
@@ -292,8 +318,8 @@ async function activateExtension(context: vscode.ExtensionContext): Promise<void
 	try {
 		await connectionManager.restoreConnections();
 		databaseTreeProvider.refresh();
-		if (gitStatusCache.hasAnyCompareEnabled()) {
-			gitStatusCache.scheduleRefresh();
+		if (gitStatusCache.hasConnectedCompareEnabled()) {
+			gitStatusCache.scheduleRefresh(undefined, { immediate: true });
 		}
 	} catch (err) {
 		console.error('pgsql-tools: restoreConnections failed', err);
@@ -379,9 +405,6 @@ async function activateExtension(context: vscode.ExtensionContext): Promise<void
 		sqlCompletionProvider.refresh();
 		updateConnectionStatusBar();
 		refreshSqlConnectionCodeLens();
-		if (gitStatusCache.hasAnyCompareEnabled()) {
-			gitStatusCache.scheduleRefresh();
-		}
 		void treeSearchProviderRef?.refreshState();
 	};
 	refreshConnectionUiRef = refreshConnectionUi;
@@ -392,6 +415,7 @@ async function activateExtension(context: vscode.ExtensionContext): Promise<void
 		routineDdlOriginalText,
 		routineDdlDecorationType,
 		() => {
+			void sqlSchemaRegistry.ensureFresh();
 			updateConnectionStatusBar();
 			refreshSqlConnectionCodeLens();
 		}
@@ -466,10 +490,6 @@ async function activateExtension(context: vscode.ExtensionContext): Promise<void
 		)
 	);
 
-	// SQL автодополнение, подсветка объектов, hover, Ctrl+клик
-	context.subscriptions.push(
-		vscode.languages.registerCompletionItemProvider('sql', sqlCompletionProvider, '.', ' ', '\t')
-	);
 	registerSqlObjectLanguageFeatures(context, {
 		schemaRegistry: sqlSchemaRegistry,
 		queryExecutor,
@@ -638,12 +658,17 @@ async function activateExtension(context: vscode.ExtensionContext): Promise<void
 				if (isDoubleClick) {
 					void (async () => {
 						if (connectionManager.isConnected(name)) {
+							void commandLogService.logCommand(name, 'pgsql-tools.disconnectConnection');
 							await connectionManager.disconnect(name);
 							vscode.window.showInformationMessage(`Disconnected: ${name}`);
 						} else {
 							const connected = await connectionManager.connectSavedConnection(name);
 							if (connected) {
+								void commandLogService.logCommand(name, 'pgsql-tools.connectConnection');
 								vscode.window.showInformationMessage(`Connected: ${name}`);
+								if (gitConnectionSettings.isCompareEnabled(name)) {
+									gitStatusCache.scheduleRefresh(name, { immediate: true });
+								}
 							}
 						}
 						refreshConnectionUi();
